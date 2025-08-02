@@ -1,0 +1,1172 @@
+import AppKit
+import SwiftUI
+
+@main
+struct CodexUsageApp: App {
+    @StateObject private var settings = AppSettings()
+    @StateObject private var viewModel = DashboardViewModel()
+
+    init() {
+        AppIcon.installApplicationIcon()
+    }
+
+    var body: some Scene {
+        MenuBarExtra {
+            MenuBarContent(viewModel: viewModel, settings: settings)
+                .frame(width: 360)
+                .task {
+                    viewModel.startAutoRefresh(settings: settings)
+                }
+                .onChange(of: settings.refreshIntervalSeconds) {
+                    viewModel.startAutoRefresh(settings: settings)
+                }
+        } label: {
+            StatusBarLabel(
+                snapshot: viewModel.snapshot,
+                health: UsageHealth.evaluate(
+                    snapshot: viewModel.snapshot,
+                    warning: settings.warningThresholdPercent,
+                    critical: settings.criticalThresholdPercent
+                ),
+                showPrimary: settings.showPrimaryWindowInStatusBar,
+                showSecondary: settings.showSecondaryWindowInStatusBar,
+                showLabels: settings.showStatusBarWindowLabels
+            )
+        }
+        .menuBarExtraStyle(.window)
+
+    }
+}
+
+struct StatusBarLabel: View {
+    var snapshot: CodexUsageSnapshot
+    var health: UsageHealth
+    var showPrimary: Bool
+    var showSecondary: Bool
+    var showLabels: Bool
+
+    var body: some View {
+        HStack(spacing: labelText.isEmpty ? 0 : 5) {
+            Image(systemName: iconName)
+            if !labelText.isEmpty {
+                Text(labelText)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    private var labelText: String {
+        var parts: [String] = []
+
+        if showPrimary {
+            parts.append(windowText(.primary))
+        }
+
+        if showSecondary {
+            parts.append(windowText(.secondary))
+        }
+
+        if parts.isEmpty {
+            return ""
+        }
+
+        return parts.joined(separator: " · ")
+    }
+
+    private func windowText(_ kind: CodexRateWindowKind) -> String {
+        let window = kind.window(in: snapshot)
+
+        guard let window else {
+            return showLabels ? "\(kind.defaultDisplayName) --%" : "--%"
+        }
+
+        let percent = "\(Int(window.remainingPercent.rounded()))%"
+        return showLabels ? "\(window.displayName) \(percent)" : percent
+    }
+
+    private var iconName: String {
+        switch health {
+        case .unavailable:
+            "bolt.trianglebadge.exclamationmark"
+        case .normal:
+            AppIcon.statusSymbolName
+        case .warning:
+            "bolt.badge.clock"
+        case .critical:
+            "exclamationmark.triangle"
+        }
+    }
+}
+
+struct MenuBarContent: View {
+    @ObservedObject var viewModel: DashboardViewModel
+    @ObservedObject var settings: AppSettings
+
+    private var health: UsageHealth {
+        UsageHealth.evaluate(
+            snapshot: viewModel.snapshot,
+            warning: settings.warningThresholdPercent,
+            critical: settings.criticalThresholdPercent
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+
+            if viewModel.snapshot.constrainedRemainingPercent == nil {
+                EmptyStateView(snapshot: viewModel.snapshot)
+            } else {
+                LimitSummaryView(snapshot: viewModel.snapshot, health: health)
+                TokenSummaryView(snapshot: viewModel.snapshot)
+                UsageTrendChartView(
+                    points: viewModel.trendPoints,
+                    rangeDays: $settings.usageTrendRangeDays
+                )
+            }
+
+            if let error = viewModel.lastError {
+                ErrorBanner(message: error)
+            }
+
+            footer
+        }
+        .padding(14)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+                .background(health.tint.gradient, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Codex 用量")
+                    .font(.system(size: 15, weight: .semibold))
+
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            HealthBadge(health: health)
+
+            Button {
+                Task {
+                    await viewModel.refresh(settings: settings)
+                }
+            } label: {
+                if viewModel.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .help("刷新用量")
+        }
+    }
+
+    private var subtitle: String {
+        let plan = viewModel.snapshot.planType?.uppercased() ?? "本地"
+        return "\(plan) · 更新于 \(UsageFormatters.relativeDateString(for: viewModel.snapshot.capturedAt, relativeTo: Date()))前"
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Button {
+                SettingsWindowPresenter.shared.show(settings: settings, viewModel: viewModel)
+            } label: {
+                Label("设置", systemImage: "slider.horizontal.3")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Spacer()
+
+            Button(role: .destructive) {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                Label("退出", systemImage: "power")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+        }
+        .padding(.top, 2)
+    }
+}
+
+@MainActor
+final class SettingsWindowPresenter {
+    static let shared = SettingsWindowPresenter()
+
+    private static let contentSize = NSSize(width: 500, height: 620)
+
+    private var window: NSWindow?
+
+    private init() {}
+
+    func show(settings: AppSettings, viewModel: DashboardViewModel) {
+        if let window {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            return
+        }
+
+        let hostingController = NSHostingController(
+            rootView: SettingsView(settings: settings, viewModel: viewModel)
+                .frame(width: Self.contentSize.width, height: Self.contentSize.height)
+        )
+
+        let nextWindow = NSWindow(contentViewController: hostingController)
+        nextWindow.setContentSize(Self.contentSize)
+        nextWindow.title = "设置"
+        nextWindow.styleMask = [.titled, .closable, .miniaturizable]
+        nextWindow.isReleasedWhenClosed = false
+        nextWindow.level = .floating
+        nextWindow.collectionBehavior = [.moveToActiveSpace]
+        nextWindow.center()
+
+        window = nextWindow
+        NSApp.activate(ignoringOtherApps: true)
+        nextWindow.makeKeyAndOrderFront(nil)
+        nextWindow.orderFrontRegardless()
+    }
+}
+
+struct LimitSummaryView: View {
+    var snapshot: CodexUsageSnapshot
+    var health: UsageHealth
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
+                UsageRing(progress: progressValue, tint: health.tint)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .lastTextBaseline, spacing: 5) {
+                        Text(UsageFormatters.percent(snapshot.constrainedRemainingPercent))
+                            .font(.system(size: 38, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+
+                        Text("剩余")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(constrainedDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            VStack(spacing: 10) {
+                if let primary = snapshot.primary {
+                    RateWindowRow(window: primary)
+                }
+
+                if let secondary = snapshot.secondary {
+                    RateWindowRow(window: secondary)
+                }
+            }
+        }
+    }
+
+    private var progressValue: Double {
+        guard let remaining = snapshot.constrainedRemainingPercent else { return 0 }
+        return max(0, min(1, remaining / 100))
+    }
+
+    private var constrainedDescription: String {
+        guard let window = snapshot.mostConstrainedWindow else {
+            return "等待本地用量快照"
+        }
+
+        return "\(window.displayName) 最紧张 · \(UsageFormatters.resetText(window.resetsAt))"
+    }
+}
+
+struct RateWindowRow: View {
+    var window: RateWindow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(window.displayName)
+                        .font(.subheadline.weight(.semibold))
+
+                    Spacer()
+
+                    Text(UsageFormatters.percent(window.remainingPercent))
+                        .font(.subheadline.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(windowTint)
+                }
+
+                Text(windowDescription)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            ProgressView(value: progressValue)
+                .tint(windowTint)
+                .controlSize(.small)
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(.separator.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private var windowDescription: String {
+        let windowText = window.windowMinutes.map { windowDurationText(minutes: $0) } ?? "窗口未知"
+        return "\(windowText) · \(UsageFormatters.resetText(window.resetsAt))"
+    }
+
+    private func windowDurationText(minutes: Int) -> String {
+        if minutes >= 1_440, minutes % 1_440 == 0 {
+            return "\(minutes / 1_440) 天窗口"
+        }
+
+        if minutes >= 60, minutes % 60 == 0 {
+            return "\(minutes / 60) 小时窗口"
+        }
+
+        return "\(minutes) 分钟窗口"
+    }
+
+    private var progressValue: Double {
+        max(0, min(1, window.remainingPercent / 100))
+    }
+
+    private var windowTint: Color {
+        switch window.remainingPercent {
+        case ...10:
+            .red
+        case ...25:
+            .orange
+        default:
+            .green
+        }
+    }
+}
+
+struct TokenSummaryView: View {
+    var snapshot: CodexUsageSnapshot
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
+            GridRow {
+                tokenCell("总计", snapshot.tokenUsage.totalTokens, icon: "sum")
+                tokenCell("输入", snapshot.tokenUsage.inputTokens, icon: "arrow.down.left")
+            }
+
+            GridRow {
+                tokenCell("输出", snapshot.tokenUsage.outputTokens, icon: "arrow.up.right")
+                tokenCell("推理", snapshot.tokenUsage.reasoningOutputTokens, icon: "sparkles")
+            }
+        }
+    }
+
+    private func tokenCell(_ label: String, _ value: Int, icon: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 20, height: 20)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Text(UsageFormatters.compactTokens(value))
+                    .font(.callout.monospacedDigit().weight(.semibold))
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct UsageTrendChartView: View {
+    var points: [UsageTrendPoint]
+    @Binding var rangeDays: Int
+    @State private var hoveredPointID: String?
+
+    private let barSpacing: Double = 3
+    private let barWidth: Double = 6
+    private let rangeOptions = [7, 14, 30]
+
+    private var displayedPoints: [UsageTrendPoint] {
+        Array(points.suffix(validRangeDays))
+    }
+
+    var body: some View {
+        if !displayedPoints.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Label("每日用量", systemImage: "chart.bar.fill")
+                        .font(.subheadline.weight(.semibold))
+
+                    Spacer()
+
+                    Text(readoutText)
+                        .font(.caption.monospacedDigit().weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Picker("展示范围", selection: $rangeDays) {
+                    ForEach(rangeOptions, id: \.self) { days in
+                        Text("\(days)天").tag(days)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .labelsHidden()
+                .help("切换每日用量图表的展示范围")
+
+                GeometryReader { proxy in
+                    HStack(alignment: .bottom, spacing: barSpacing) {
+                        ForEach(displayedPoints) { point in
+                            Capsule(style: .continuous)
+                                .fill(barColor(for: point))
+                                .frame(width: barWidth, height: barHeight(for: point, in: proxy.size.height))
+                                .contentShape(Rectangle())
+                                .onHover { isHovering in
+                                    hoveredPointID = isHovering ? point.id : nil
+                                }
+                                .accessibilityLabel(tooltipText(for: point))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                }
+                .frame(height: 58)
+                .accessibilityLabel("每日 token 用量变化")
+
+                HStack {
+                    Text(dayText(for: displayedPoints.first?.capturedAt))
+                    Spacer()
+                    Text(dayText(for: displayedPoints.last?.capturedAt))
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            }
+            .padding(10)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(.separator.opacity(0.35), lineWidth: 1)
+            )
+        }
+    }
+
+    private var readoutText: String {
+        guard let hoveredPoint else { return summaryText }
+        return "\(dayText(for: hoveredPoint.capturedAt)) \(UsageFormatters.compactTokens(hoveredPoint.totalTokens))"
+    }
+
+    private var hoveredPoint: UsageTrendPoint? {
+        guard let hoveredPointID else { return nil }
+        return displayedPoints.first { $0.id == hoveredPointID }
+    }
+
+    private var summaryText: String {
+        guard let latest = displayedPoints.last else { return "--" }
+        let prefix = Calendar.current.isDateInToday(latest.capturedAt) ? "今日" : "最近"
+        return "\(prefix) \(UsageFormatters.compactTokens(latest.totalTokens))"
+    }
+
+    private var validRangeDays: Int {
+        rangeOptions.contains(rangeDays) ? rangeDays : 30
+    }
+
+    private var maxTokens: Int {
+        max(displayedPoints.map(\.totalTokens).max() ?? 0, 1)
+    }
+
+    private func barHeight(for point: UsageTrendPoint, in availableHeight: Double) -> Double {
+        let ratio = Double(point.totalTokens) / Double(maxTokens)
+        return max(4, availableHeight * ratio)
+    }
+
+    private func barColor(for point: UsageTrendPoint) -> Color {
+        guard point.totalTokens > 0 else {
+            return Color(nsColor: .quaternaryLabelColor).opacity(0.35)
+        }
+
+        guard let latest = displayedPoints.last else {
+            return .accentColor.opacity(0.55)
+        }
+
+        if point.id == hoveredPointID {
+            return .accentColor
+        }
+
+        return point.id == latest.id ? .accentColor.opacity(0.8) : .accentColor.opacity(0.45)
+    }
+
+    private func dayText(for date: Date?) -> String {
+        guard let date else { return "--" }
+        return UsageFormatters.shortDay(date)
+    }
+
+    private func tooltipText(for point: UsageTrendPoint) -> String {
+        "\(UsageFormatters.fullDate(point.capturedAt)) · \(UsageFormatters.compactTokens(point.totalTokens)) tokens"
+    }
+}
+
+struct EmptyStateView: View {
+    var snapshot: CodexUsageSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, height: 34)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                Text("还没有用量快照")
+                    .font(.subheadline.weight(.semibold))
+            }
+
+            Text("先运行一次 Codex，然后刷新。应用只会读取本地会话日志里的 token-count 用量事件。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(snapshot.source)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(2)
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(.separator.opacity(0.35), lineWidth: 1)
+        )
+    }
+}
+
+struct UsageRing: View {
+    var progress: Double
+    var tint: Color
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(.quaternary, lineWidth: 7)
+
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(tint, style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(tint)
+        }
+        .frame(width: 58, height: 58)
+        .accessibilityHidden(true)
+    }
+}
+
+struct HealthBadge: View {
+    var health: UsageHealth
+
+    var body: some View {
+        Label(health.title, systemImage: health.iconName)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(health.tint)
+            .labelStyle(.titleAndIcon)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(health.tint.opacity(0.12), in: Capsule())
+    }
+}
+
+struct ErrorBanner: View {
+    var message: String
+
+    var body: some View {
+        Label {
+            Text(message)
+                .font(.caption)
+                .lineLimit(3)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+        }
+        .foregroundStyle(.red)
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private extension UsageHealth {
+    var title: String {
+        switch self {
+        case .unavailable:
+            "等待"
+        case .normal:
+            "充足"
+        case .warning:
+            "注意"
+        case .critical:
+            "紧张"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .unavailable:
+            "clock"
+        case .normal:
+            "checkmark.circle.fill"
+        case .warning:
+            "clock.badge.exclamationmark"
+        case .critical:
+            "exclamationmark.triangle.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .unavailable:
+            .secondary
+        case .normal:
+            .green
+        case .warning:
+            .orange
+        case .critical:
+            .red
+        }
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var viewModel: DashboardViewModel
+    #if DEBUG
+    @State private var debugNotificationAlertMessage = ""
+    @State private var debugNotificationAlertTitle = ""
+    @State private var isDebugNotificationAlertPresented = false
+    @State private var sendingDebugNotificationTarget: CodexRateWindowKind?
+    #endif
+    @State private var isResetConfirmationPresented = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                settingsHeader
+
+                SettingsSection(
+                    icon: "arrow.clockwise",
+                    title: "刷新",
+                    subtitle: "控制状态栏和面板读取本地快照的频率。"
+                ) {
+                    RefreshIntervalControl(seconds: $settings.refreshIntervalSeconds)
+                }
+
+                SettingsSection(
+                    icon: "menubar.rectangle",
+                    title: "状态栏",
+                    subtitle: "选择状态栏里常驻展示的额度窗口和格式。"
+                ) {
+                    VStack(spacing: 10) {
+                        ToggleRow(
+                            title: CodexRateWindowKind.primary.settingsTitle,
+                            subtitle: "例如 \(CodexRateWindowKind.primary.exampleText)",
+                            isOn: primaryStatusBinding
+                        )
+
+                        ToggleRow(
+                            title: CodexRateWindowKind.secondary.settingsTitle,
+                            subtitle: "例如 \(CodexRateWindowKind.secondary.exampleText)",
+                            isOn: secondaryStatusBinding
+                        )
+
+                        ToggleRow(
+                            title: "显示额度名称",
+                            subtitle: "开启为 \(CodexRateWindowKind.primary.exampleText)，关闭为 86%",
+                            isOn: $settings.showStatusBarWindowLabels
+                        )
+                    }
+                }
+
+                SettingsSection(
+                    icon: "bell.badge",
+                    title: "通知",
+                    subtitle: "在剩余额度进入压力区间时提醒。"
+                ) {
+                    VStack(spacing: 12) {
+                        ToggleRow(
+                            title: "启用通知",
+                            subtitle: "首次开启时 macOS 会请求通知权限。",
+                            isOn: $settings.notificationsEnabled
+                        )
+
+                        #if DEBUG
+                        NotificationDebugRows(
+                            isEnabled: settings.notificationsEnabled,
+                            primaryWindow: viewModel.snapshot.primary,
+                            secondaryWindow: viewModel.snapshot.secondary,
+                            sendingTarget: sendingDebugNotificationTarget,
+                            action: sendDebugNotification
+                        )
+                        #endif
+
+                        SliderRow(
+                            title: "提醒阈值",
+                            detail: "低于该比例时标记为注意",
+                            value: $settings.warningThresholdPercent,
+                            range: 1...80,
+                            tint: .orange
+                        )
+
+                        SliderRow(
+                            title: "严重阈值",
+                            detail: "低于该比例时标记为紧张",
+                            value: $settings.criticalThresholdPercent,
+                            range: 1...50,
+                            tint: .red
+                        )
+                    }
+                }
+
+                SettingsSection(
+                    icon: "arrow.counterclockwise",
+                    title: "重置设置",
+                    subtitle: "恢复默认偏好。"
+                ) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("恢复默认设置")
+                                .font(.callout.weight(.medium))
+
+                            Text("刷新、状态栏和通知偏好会恢复到初始状态")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button(role: .destructive) {
+                            isResetConfirmationPresented = true
+                        } label: {
+                            Label("重置", systemImage: "arrow.counterclockwise")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    .padding(10)
+                    .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .alert("重置所有设置？", isPresented: $isResetConfirmationPresented) {
+            Button("取消", role: .cancel) {}
+            Button("重置", role: .destructive) {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    settings.reset()
+                }
+            }
+        } message: {
+            Text("这会恢复刷新间隔、状态栏展示、通知阈值、图表范围和 Codex 路径设置。")
+        }
+        #if DEBUG
+        .alert(debugNotificationAlertTitle, isPresented: $isDebugNotificationAlertPresented) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(debugNotificationAlertMessage)
+        }
+        #endif
+    }
+
+    private var settingsHeader: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(Color.accentColor.gradient, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("设置")
+                    .font(.system(size: 18, weight: .semibold))
+
+                Text("Codex 用量监控偏好")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+    }
+
+    private var primaryStatusBinding: Binding<Bool> {
+        Binding {
+            settings.showPrimaryWindowInStatusBar
+        } set: { isOn in
+            settings.showPrimaryWindowInStatusBar = isOn
+        }
+    }
+
+    private var secondaryStatusBinding: Binding<Bool> {
+        Binding {
+            settings.showSecondaryWindowInStatusBar
+        } set: { isOn in
+            settings.showSecondaryWindowInStatusBar = isOn
+        }
+    }
+
+    #if DEBUG
+    private func sendDebugNotification(for target: CodexRateWindowKind) {
+        guard sendingDebugNotificationTarget == nil,
+              let window = target.window(in: viewModel.snapshot) else {
+            return
+        }
+
+        sendingDebugNotificationTarget = target
+        Task {
+            do {
+                let testWindow = simulatedNotificationWindow(from: window)
+                let health = notificationHealth(for: testWindow)
+                let delivery = try await NotificationManager().sendDebugNotification(
+                    window: testWindow,
+                    health: health
+                )
+                switch delivery {
+                case .appBundle:
+                    debugNotificationAlertTitle = "测试通知已发送"
+                    debugNotificationAlertMessage = "已按 \(testWindow.displayName) 模拟真实提醒。"
+                case .developmentPreview:
+                    debugNotificationAlertTitle = "开发预览通知已发送"
+                    debugNotificationAlertMessage = "当前是 swift run 开发运行，已按 \(testWindow.displayName) 预览真实提醒效果。"
+                }
+            } catch {
+                debugNotificationAlertTitle = "测试通知失败"
+                debugNotificationAlertMessage = error.localizedDescription
+            }
+
+            sendingDebugNotificationTarget = nil
+            isDebugNotificationAlertPresented = true
+        }
+    }
+
+    private func simulatedNotificationWindow(from window: RateWindow) -> RateWindow {
+        let health = notificationHealth(for: window)
+        guard health == .normal else { return window }
+
+        let simulatedRemaining = max(0, min(100, settings.warningThresholdPercent))
+        return RateWindow(
+            name: window.displayName,
+            usedPercent: 100 - simulatedRemaining,
+            windowMinutes: window.windowMinutes,
+            resetsAt: window.resetsAt
+        )
+    }
+
+    private func notificationHealth(for window: RateWindow) -> UsageHealth {
+        if window.remainingPercent <= settings.criticalThresholdPercent {
+            return .critical
+        }
+
+        if window.remainingPercent <= settings.warningThresholdPercent {
+            return .warning
+        }
+
+        return .normal
+    }
+    #endif
+}
+
+struct SettingsSection<Content: View>: View {
+    var icon: String
+    var title: String
+    var subtitle: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 28, height: 28)
+                    .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            content
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(.separator.opacity(0.35), lineWidth: 1)
+        )
+    }
+}
+
+struct ToggleRow: View {
+    var title: String
+    var subtitle: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.callout.weight(.medium))
+
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            SwitchControl(isOn: $isOn)
+        }
+        .padding(10)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+#if DEBUG
+struct NotificationDebugRows: View {
+    var isEnabled: Bool
+    var primaryWindow: RateWindow?
+    var secondaryWindow: RateWindow?
+    var sendingTarget: CodexRateWindowKind?
+    var action: (CodexRateWindowKind) -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            debugRow(target: .primary, window: primaryWindow)
+            debugRow(target: .secondary, window: secondaryWindow)
+        }
+    }
+
+    private func debugRow(target: CodexRateWindowKind, window: RateWindow?) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("测试 \(window?.displayName ?? target.defaultDisplayName) 通知")
+                    .font(.callout.weight(.medium))
+
+                Text(subtitle(for: window))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            debugButton(target: target, window: window)
+        }
+        .padding(10)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func debugButton(target: CodexRateWindowKind, window: RateWindow?) -> some View {
+        let isSending = sendingTarget == target
+        let isDisabled = !isEnabled || window == nil || sendingTarget != nil
+
+        return Button {
+            action(target)
+        } label: {
+            Label {
+                Text(isSending ? "发送中" : "发送")
+            } icon: {
+                if isSending {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "paperplane.fill")
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(isDisabled)
+        .help(helpText(for: window))
+    }
+
+    private func subtitle(for window: RateWindow?) -> String {
+        guard let window else {
+            return isEnabled ? "等待本地快照后可测试" : "开启通知后可发送测试提醒"
+        }
+
+        return "\(window.displayName) · 当前剩余 \(UsageFormatters.percent(window.remainingPercent))"
+    }
+
+    private func helpText(for window: RateWindow?) -> String {
+        guard let window else { return "没有可用于测试的额度快照" }
+        return "按 \(window.displayName) 模拟发送真实通知"
+    }
+}
+#endif
+
+struct SwitchControl: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.spring(response: 0.22, dampingFraction: 0.82)) {
+                isOn.toggle()
+            }
+        } label: {
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isOn ? Color.green : Color(nsColor: .quaternaryLabelColor).opacity(0.26))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(trackBorder, lineWidth: 1)
+                    )
+
+                Circle()
+                    .fill(.white)
+                    .frame(width: 18, height: 18)
+                    .shadow(color: .black.opacity(0.16), radius: 2, x: 0, y: 1)
+                    .padding(3)
+            }
+            .frame(width: 42, height: 24)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isOn ? "开启" : "关闭")
+        .accessibilityValue(isOn ? "开启" : "关闭")
+    }
+
+    private var trackBorder: Color {
+        isOn ? Color.green.opacity(0.55) : Color(nsColor: .separatorColor).opacity(0.45)
+    }
+}
+
+struct RefreshIntervalControl: View {
+    @Binding var seconds: Double
+
+    private let presets: [Double] = [15, 30, 60, 120, 300]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                ForEach(presets, id: \.self) { preset in
+                    Button(presetTitle(preset)) {
+                        seconds = preset
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Int(seconds) == Int(preset) ? .accentColor : .secondary)
+                }
+
+                Spacer()
+            }
+
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("自定义间隔")
+                        .font(.callout.weight(.medium))
+
+                    Text("最短 15 秒，最长 15 分钟")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Stepper(
+                    "\(Int(seconds)) 秒",
+                    value: $seconds,
+                    in: 15...900,
+                    step: 15
+                )
+                .monospacedDigit()
+                .frame(width: 120, alignment: .trailing)
+            }
+            .padding(10)
+            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func presetTitle(_ value: Double) -> String {
+        switch Int(value) {
+        case 60:
+            "1 分钟"
+        case 120:
+            "2 分钟"
+        case 300:
+            "5 分钟"
+        default:
+            "\(Int(value)) 秒"
+        }
+    }
+}
+
+struct SliderRow: View {
+    var title: String
+    var detail: String
+    @Binding var value: Double
+    var range: ClosedRange<Double>
+    var tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.callout.weight(.medium))
+
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(UsageFormatters.percent(value))
+                    .font(.callout.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(tint.opacity(0.12), in: Capsule())
+            }
+
+            Slider(value: $value, in: range, step: 1)
+                .tint(tint)
+        }
+        .padding(10)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
