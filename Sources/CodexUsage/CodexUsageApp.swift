@@ -14,12 +14,6 @@ struct CodexUsageApp: App {
         MenuBarExtra {
             MenuBarContent(viewModel: viewModel, settings: settings)
                 .frame(width: 360)
-                .task {
-                    viewModel.startAutoRefresh(settings: settings)
-                }
-                .onChange(of: settings.refreshIntervalSeconds) {
-                    viewModel.startAutoRefresh(settings: settings)
-                }
         } label: {
             StatusBarLabel(
                 snapshot: viewModel.snapshot,
@@ -32,6 +26,12 @@ struct CodexUsageApp: App {
                 showSecondary: settings.showSecondaryWindowInStatusBar,
                 showLabels: settings.showStatusBarWindowLabels
             )
+            .task {
+                viewModel.startAutoRefresh(settings: settings)
+            }
+            .onChange(of: settings.refreshIntervalSeconds) {
+                viewModel.startAutoRefresh(settings: settings)
+            }
         }
         .menuBarExtraStyle(.window)
 
@@ -118,7 +118,7 @@ struct MenuBarContent: View {
                 EmptyStateView(snapshot: viewModel.snapshot)
             } else {
                 LimitSummaryView(snapshot: viewModel.snapshot, health: health)
-                TokenSummaryView(snapshot: viewModel.snapshot)
+                TokenSummaryView(points: viewModel.trendPoints)
                 UsageTrendChartView(
                     points: viewModel.trendPoints,
                     rangeDays: $settings.usageTrendRangeDays
@@ -365,20 +365,45 @@ struct RateWindowRow: View {
 }
 
 struct TokenSummaryView: View {
-    var snapshot: CodexUsageSnapshot
+    var points: [UsageTrendPoint]
+
+    private var recentPoints: [UsageTrendPoint] {
+        points.filter { $0.totalTokens > 0 }
+    }
 
     var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
-            GridRow {
-                tokenCell("总计", snapshot.tokenUsage.totalTokens, icon: "sum")
-                tokenCell("输入", snapshot.tokenUsage.inputTokens, icon: "arrow.down.left")
-            }
+        if !points.isEmpty {
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
+                GridRow {
+                    tokenCell(todayLabel, todayTotal, icon: "calendar")
+                    tokenCell("近 7 天", total(forLastDays: 7), icon: "chart.bar")
+                }
 
-            GridRow {
-                tokenCell("输出", snapshot.tokenUsage.outputTokens, icon: "arrow.up.right")
-                tokenCell("推理", snapshot.tokenUsage.reasoningOutputTokens, icon: "sparkles")
+                GridRow {
+                    tokenCell("近 30 天", total(forLastDays: 30), icon: "sum")
+                    tokenCell("日均", dailyAverage, icon: "divide")
+                }
             }
         }
+    }
+
+    private var todayLabel: String {
+        guard let latest = points.last else { return "今日估算" }
+        return Calendar.current.isDateInToday(latest.capturedAt) ? "今日估算" : "最近估算"
+    }
+
+    private var todayTotal: Int {
+        points.last?.totalTokens ?? 0
+    }
+
+    private var dailyAverage: Int {
+        guard !recentPoints.isEmpty else { return 0 }
+        let total = recentPoints.reduce(0) { $0 + $1.totalTokens }
+        return Int((Double(total) / Double(recentPoints.count)).rounded())
+    }
+
+    private func total(forLastDays days: Int) -> Int {
+        points.suffix(days).reduce(0) { $0 + $1.totalTokens }
     }
 
     private func tokenCell(_ label: String, _ value: Int, icon: String) -> some View {
@@ -421,7 +446,7 @@ struct UsageTrendChartView: View {
         if !displayedPoints.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
-                    Label("每日用量", systemImage: "chart.bar.fill")
+                    Label("每日用量估算", systemImage: "chart.bar.fill")
                         .font(.subheadline.weight(.semibold))
 
                     Spacer()
@@ -457,7 +482,7 @@ struct UsageTrendChartView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 }
                 .frame(height: 58)
-                .accessibilityLabel("每日 token 用量变化")
+                .accessibilityLabel("每日 token 用量估算变化")
 
                 HStack {
                     Text(dayText(for: displayedPoints.first?.capturedAt))

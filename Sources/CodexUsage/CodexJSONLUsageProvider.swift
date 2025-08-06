@@ -1,39 +1,121 @@
 import Foundation
+import SQLite3
 
 protocol UsageProvider: Sendable {
-    func fetchUsageReport(codexHomePath: String) throws -> UsageReport
+    func fetchLatestSnapshot(codexHomePath: String) throws -> CodexUsageSnapshot
+    func fetchTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint]
 }
 
 struct CodexJSONLUsageProvider: UsageProvider {
     private let maxBytesPerFile = UInt64(600_000)
     private let maxTrendDays = 30
 
-    func fetchUsageReport(codexHomePath: String) throws -> UsageReport {
+    func fetchLatestSnapshot(codexHomePath: String) throws -> CodexUsageSnapshot {
         let sessionsURL = URL(fileURLWithPath: codexHomePath)
             .appendingPathComponent("sessions", isDirectory: true)
 
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: sessionsURL.path) else {
-            return UsageReport(snapshot: .empty, trendPoints: [])
+            return .empty
         }
 
         let files = try recentJSONLFiles(in: sessionsURL)
         guard let newest = try newestTokenEvent(in: files) else {
-            return UsageReport(snapshot: .empty, trendPoints: [])
+            return .empty
         }
 
-        let cutoffDate = trendCutoffDate(relativeTo: newest.timestamp)
+        return newest.snapshot
+    }
+
+    func fetchTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint] {
+        let sessionsURL = URL(fileURLWithPath: codexHomePath)
+            .appendingPathComponent("sessions", isDirectory: true)
+
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: sessionsURL.path) else {
+            return []
+        }
+
+        if let threadTrendPoints = try fetchThreadTrendPoints(codexHomePath: codexHomePath, relativeTo: date) {
+            return threadTrendPoints
+        }
+
+        let files = try recentJSONLFiles(in: sessionsURL)
+        let cutoffDate = trendCutoffDate(relativeTo: date)
         var events: [ParsedTokenEvent] = []
         for file in files where file.modifiedAt >= cutoffDate {
             events.append(contentsOf: try tokenEvents(in: file.url, mode: .fullFile))
         }
 
         let sortedEvents = events.sorted { $0.timestamp < $1.timestamp }
+        return dailyTrendPoints(from: sortedEvents, cutoffDate: cutoffDate)
+    }
 
-        return UsageReport(
-            snapshot: newest.snapshot,
-            trendPoints: dailyTrendPoints(from: sortedEvents)
-        )
+    private func fetchThreadTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint]? {
+        let databaseURL = URL(fileURLWithPath: codexHomePath)
+            .appendingPathComponent("state_5.sqlite")
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: databaseURL.path) else {
+            return nil
+        }
+
+        var database: OpaquePointer?
+        let openFlags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(databaseURL.path, &database, openFlags, nil) == SQLITE_OK,
+              let database else {
+            return nil
+        }
+        defer { sqlite3_close(database) }
+
+        let calendar = Calendar.current
+        let latestDay = calendar.startOfDay(for: date)
+        let startOffset = -(maxTrendDays - 1)
+        guard let firstDay = calendar.date(byAdding: .day, value: startOffset, to: latestDay),
+              let endDate = calendar.date(byAdding: .day, value: 1, to: latestDay) else {
+            return nil
+        }
+
+        let query = """
+            SELECT created_at, tokens_used
+            FROM threads
+            WHERE tokens_used > 0
+              AND created_at >= ?
+              AND created_at < ?
+            ORDER BY created_at ASC
+            """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, Int64(firstDay.timeIntervalSince1970))
+        sqlite3_bind_int64(statement, 2, Int64(endDate.timeIntervalSince1970))
+
+        var totalsByDay: [Date: Int] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let createdAt = sqlite3_column_int64(statement, 0)
+            let tokensUsed = Int(sqlite3_column_int64(statement, 1))
+            let day = calendar.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(createdAt)))
+            totalsByDay[day, default: 0] += tokensUsed
+        }
+
+        guard !totalsByDay.isEmpty else {
+            return nil
+        }
+
+        return (0..<maxTrendDays).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: firstDay) else {
+                return nil
+            }
+
+            return UsageTrendPoint(
+                capturedAt: day,
+                totalTokens: totalsByDay[day, default: 0]
+            )
+        }
     }
 
     private func recentJSONLFiles(in sessionsURL: URL) throws -> [JSONLFile] {
@@ -172,11 +254,11 @@ struct CodexJSONLUsageProvider: UsageProvider {
         )
     }
 
-    private func dailyTrendPoints(from events: [ParsedTokenEvent]) -> [UsageTrendPoint] {
+    private func dailyTrendPoints(from events: [ParsedTokenEvent], cutoffDate: Date) -> [UsageTrendPoint] {
         let calendar = Calendar.current
         var totalsByDay: [Date: Int] = [:]
 
-        for event in events where event.tokenDelta > 0 {
+        for event in events where event.timestamp >= cutoffDate && event.tokenDelta > 0 {
             let day = calendar.startOfDay(for: event.timestamp)
             totalsByDay[day, default: 0] += event.tokenDelta
         }

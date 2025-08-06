@@ -16,11 +16,6 @@ struct TokenUsage: Codable, Equatable {
     )
 }
 
-struct UsageReport {
-    var snapshot: CodexUsageSnapshot
-    var trendPoints: [UsageTrendPoint]
-}
-
 struct UsageTrendPoint: Codable, Equatable, Identifiable {
     var id: String {
         "\(Int(capturedAt.timeIntervalSince1970))-\(totalTokens)"

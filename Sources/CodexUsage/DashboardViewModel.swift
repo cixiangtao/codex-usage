@@ -60,26 +60,32 @@ final class DashboardViewModel: ObservableObject {
         let provider = provider
 
         do {
-            let report = try await Task.detached(priority: .utility) {
-                try provider.fetchUsageReport(codexHomePath: codexHomePath)
+            let nextSnapshot = try await Task.detached(priority: .userInitiated) {
+                try provider.fetchLatestSnapshot(codexHomePath: codexHomePath)
             }.value
 
-            snapshot = report.snapshot
-            trendPoints = report.trendPoints
+            snapshot = nextSnapshot
             lastError = nil
-            sharedStore.save(report.snapshot)
+            sharedStore.save(nextSnapshot)
 
             let health = UsageHealth.evaluate(
-                snapshot: report.snapshot,
+                snapshot: nextSnapshot,
                 warning: warningThreshold,
                 critical: criticalThreshold
             )
 
             await notificationManager.notifyIfNeeded(
-                snapshot: report.snapshot,
+                snapshot: nextSnapshot,
                 health: health,
                 notificationsEnabled: notificationsEnabled
             )
+
+            trendPoints = try await Task.detached(priority: .utility) {
+                try provider.fetchTrendPoints(
+                    codexHomePath: codexHomePath,
+                    relativeTo: nextSnapshot.capturedAt
+                )
+            }.value
         } catch {
             lastError = error.localizedDescription
         }

@@ -14,7 +14,7 @@
 
 ## 数据来源说明
 
-OpenAI 当前 Codex 文档描述了套餐访问、本地登录、API Key 计费和 Enterprise 审计/监控 API，但没有公开个人 Plus/Pro/Go 套餐精确剩余额度查询 API。因此应用会读取 Codex 已经写入本地会话日志的结构化 `rate_limits` 快照。它不会读取 `~/.codex/auth.json`，只解析 token-count/rate-limit 事件行。
+OpenAI 当前 Codex 文档描述了套餐访问、本地登录、API Key 计费和 Enterprise 审计/监控 API，但没有公开个人 Plus/Pro/Go 套餐精确剩余额度查询 API。因此应用会读取 Codex 已经写入本地会话日志的结构化 `rate_limits` 快照。每日 token 趋势优先读取 `~/.codex/state_5.sqlite` 中的线程级 `tokens_used` 汇总，以贴近 Codex 个人资料页统计；如果该数据库不可用，再回退解析 `~/.codex/sessions/**/*.jsonl` 的 token-count 事件。由于个人资料页统计来自服务端口径，本地趋势仍可能有轻微差异。它不会读取 `~/.codex/auth.json`。
 
 ## 本地运行
 
