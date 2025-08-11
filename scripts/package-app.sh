@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="CodexUsage"
 BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-com.anys.codexusage}"
+VERSION="${VERSION:-1.0.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 APP_PATH="${OUTPUT_DIR}/${APP_NAME}.app"
 
@@ -14,6 +16,8 @@ Usage: scripts/package-app.sh
 
 Environment:
   BUNDLE_IDENTIFIER   Bundle identifier. Default: ${BUNDLE_IDENTIFIER}
+  VERSION             CFBundleShortVersionString. Default: ${VERSION}
+  BUILD_NUMBER        CFBundleVersion. Default: ${BUILD_NUMBER}
   OUTPUT_DIR          Output directory. Default: ${OUTPUT_DIR}
 EOF
 }
@@ -70,9 +74,9 @@ cat > "${APP_PATH}/Contents/Info.plist" <<EOF
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>${VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>${BUILD_NUMBER}</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>

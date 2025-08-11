@@ -46,6 +46,35 @@ scripts/package-app.sh
 BUNDLE_IDENTIFIER=com.example.CodexUsage OUTPUT_DIR=/tmp scripts/package-app.sh
 ```
 
+发布版本时建议同时写入 app 版本号和构建号：
+
+```sh
+VERSION=1.2.3 BUILD_NUMBER=456 scripts/package-app.sh
+```
+
+## 更新检测
+
+设置窗口会从 GitLab Release API 检查最新版本：
+
+```text
+https://gitlab-ee.zhenguanyu.com/api/v4/projects/cixiangtao%2Fcodex-usage/releases/permalink/latest
+```
+
+应用会读取本地 `CFBundleShortVersionString`，和最新 Release 的 tag 版本比较；tag 建议使用 `v1.2.3` 这种语义化版本。检测到新版本后，设置页会提供下载入口，优先打开 Release asset 中的 `.zip` 包。
+
+如果仓库是私有项目，app 内请求 GitLab API 时没有浏览器登录态，可能会检测失败。要公开分发时，可以把项目 Release 设为可匿名读取，或改为由 GitLab Pages 发布一个公开的 `latest.json` 更新清单。
+
+## GitLab 发布
+
+仓库内的 `.gitlab-ci.yml` 会在推送 tag 时执行发布流水线：
+
+1. 使用 macOS Runner 执行 `scripts/package-app.sh`。
+2. 将 `dist/CodexUsage.app` 打包成 `CodexUsage-vX.Y.Z.zip`。
+3. 上传到 GitLab Generic Package Registry。
+4. 创建 GitLab Release，并把 zip 作为 Release asset。
+
+默认构建任务使用 `macos` runner tag。需要先在 GitLab EE 上注册一台带 Swift/Xcode 工具链的 macOS Runner，并给它设置 `macos` tag。上传和 Release 任务使用 Docker 镜像运行，如果 GitLab 实例没有可用的 Docker Runner，需要给这两个任务补充合适的 runner tag，或改成在 macOS Runner 上安装 `curl`/`glab` 后执行。
+
 ## 小组件设置
 
 1. 在 Xcode 中创建名为 `CodexUsageWidgetExtension` 的 macOS Widget Extension。

@@ -690,6 +690,7 @@ private extension UsageHealth {
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var viewModel: DashboardViewModel
+    @StateObject private var updateViewModel = UpdateCheckViewModel()
     #if DEBUG
     @State private var debugNotificationAlertMessage = ""
     @State private var debugNotificationAlertTitle = ""
@@ -778,6 +779,14 @@ struct SettingsView: View {
                 }
 
                 SettingsSection(
+                    icon: "arrow.down.circle",
+                    title: "更新",
+                    subtitle: "从 GitLab Release 检查新版本。"
+                ) {
+                    UpdateCheckRows(viewModel: updateViewModel)
+                }
+
+                SettingsSection(
                     icon: "arrow.counterclockwise",
                     title: "重置设置",
                     subtitle: "恢复默认偏好。"
@@ -811,6 +820,9 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
+        .task {
+            await updateViewModel.checkIfNeeded()
+        }
         .alert("重置所有设置？", isPresented: $isResetConfirmationPresented) {
             Button("取消", role: .cancel) {}
             Button("重置", role: .destructive) {
@@ -926,6 +938,168 @@ struct SettingsView: View {
         return .normal
     }
     #endif
+}
+
+@MainActor
+final class UpdateCheckViewModel: ObservableObject {
+    @Published private(set) var result: UpdateCheckResult?
+    @Published private(set) var errorMessage: String?
+    @Published private(set) var isChecking = false
+
+    let currentVersion = UpdateChecker.currentVersion
+
+    private let checker = UpdateChecker()
+
+    func checkIfNeeded() async {
+        guard result == nil, errorMessage == nil else { return }
+        await check()
+    }
+
+    func check() async {
+        guard !isChecking else { return }
+
+        isChecking = true
+        errorMessage = nil
+
+        do {
+            result = try await checker.checkForUpdates()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isChecking = false
+    }
+
+    func openDownload() {
+        guard let url = result?.downloadURL ?? result?.releasePageURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+}
+
+struct UpdateCheckRows: View {
+    @ObservedObject var viewModel: UpdateCheckViewModel
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(statusTitle)
+                        .font(.callout.weight(.medium))
+
+                    Text(statusSubtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                updateBadge
+            }
+            .padding(10)
+            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            HStack(spacing: 8) {
+                Button {
+                    Task {
+                        await viewModel.check()
+                    }
+                } label: {
+                    Label {
+                        Text(viewModel.isChecking ? "检查中" : "检查更新")
+                    } icon: {
+                        if viewModel.isChecking {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.isChecking)
+
+                if viewModel.result != nil {
+                    Button {
+                        viewModel.openDownload()
+                    } label: {
+                        Label(downloadButtonTitle, systemImage: "safari")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(viewModel.isChecking)
+                }
+
+                Spacer()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var updateBadge: some View {
+        if viewModel.isChecking {
+            ProgressView()
+                .controlSize(.small)
+        } else if let result = viewModel.result {
+            Text(result.isUpdateAvailable ? "可更新" : "最新")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(result.isUpdateAvailable ? .orange : .green)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background((result.isUpdateAvailable ? Color.orange : Color.green).opacity(0.12), in: Capsule())
+        } else if viewModel.errorMessage != nil {
+            Text("失败")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.red)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.red.opacity(0.12), in: Capsule())
+        } else {
+            Text("未检查")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.12), in: Capsule())
+        }
+    }
+
+    private var statusTitle: String {
+        if viewModel.isChecking {
+            return "正在检查更新"
+        }
+
+        if let result = viewModel.result {
+            return result.isUpdateAvailable ? "发现新版本 \(result.latestVersion)" : "已是最新版本"
+        }
+
+        if viewModel.errorMessage != nil {
+            return "更新检测失败"
+        }
+
+        return "当前版本 \(viewModel.currentVersion)"
+    }
+
+    private var statusSubtitle: String {
+        if let errorMessage = viewModel.errorMessage {
+            return errorMessage
+        }
+
+        guard let result = viewModel.result else {
+            return "打开设置时会自动检查一次，也可以手动重试。"
+        }
+
+        if result.isUpdateAvailable {
+            return "当前 \(result.currentVersion)，最新 \(result.releaseName)。"
+        }
+
+        return "当前 \(result.currentVersion)，GitLab 最新 \(result.latestVersion)。"
+    }
+
+    private var downloadButtonTitle: String {
+        guard let result = viewModel.result else { return "打开发布页" }
+        return result.isUpdateAvailable ? "下载更新" : "打开发布页"
+    }
 }
 
 struct SettingsSection<Content: View>: View {
