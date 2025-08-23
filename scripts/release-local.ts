@@ -320,12 +320,47 @@ const formBody = (values: Record<string, string>) => {
   return body;
 };
 
+const validateReleaseRef = async (config: Config) => {
+  const encodedRef = encodeURIComponent(config.releaseRef);
+  const response = await gitLabRequest(config, `/repository/commits/${encodedRef}`, {}, { allowNotFound: true });
+
+  if (response.status !== 404) {
+    return;
+  }
+
+  fail(
+    `release ref ${config.releaseRef} is not available in GitLab. Push the commit or set RELEASE_REF to a remote branch/tag.`,
+  );
+};
+
+const uploadPackageAsset = async (config: Config, packagePath: string, zipPath: string) => {
+  const existingPackage = await gitLabRequest(config, packagePath, { method: "HEAD" }, { allowNotFound: true });
+
+  if (existingPackage.status !== 404) {
+    console.log("[release] Package asset already exists; reusing it.");
+    return;
+  }
+
+  const file = await readFile(zipPath);
+  await gitLabRequest(config, packagePath, {
+    method: "PUT",
+    body: file,
+  });
+};
+
 const publishRelease = async (config: Config) => {
   const encodedTag = encodeURIComponent(config.tagName);
   const zipName = `${config.appName}-${config.tagName}.zip`;
   const zipPath = resolve(config.outputDir, zipName);
-  const packageURL = `https://${config.gitLabHost}/api/v4/projects/${encodeURIComponent(config.projectPath)}/packages/generic/${config.packageName}/${config.version}/${zipName}`;
+  const packagePath = `/packages/generic/${config.packageName}/${config.version}/${zipName}`;
+  const packageURL = `https://${config.gitLabHost}/api/v4/projects/${encodeURIComponent(config.projectPath)}${packagePath}`;
   const directAssetPath = `/downloads/${zipName}`;
+  const existingRelease = await gitLabRequest(config, `/releases/${encodedTag}`, {}, { allowNotFound: true });
+
+  if (existingRelease.status === 404) {
+    console.log(`[release] Verifying release target ${config.releaseRef}...`);
+    await validateReleaseRef(config);
+  }
 
   await syncPackageVersion(config.version);
 
@@ -340,14 +375,9 @@ const publishRelease = async (config: Config) => {
   await run("ditto", ["-c", "-k", "--keepParent", `${config.outputDir}/${config.appName}.app`, zipPath]);
 
   console.log("[release] Uploading package asset...");
-  const file = await readFile(zipPath);
-  await gitLabRequest(config, `/packages/generic/${config.packageName}/${config.version}/${zipName}`, {
-    method: "PUT",
-    body: file,
-  });
+  await uploadPackageAsset(config, packagePath, zipPath);
 
   console.log("[release] Creating or updating GitLab release...");
-  const existingRelease = await gitLabRequest(config, `/releases/${encodedTag}`, {}, { allowNotFound: true });
   const releaseBody = formBody({
     name: config.releaseName,
     description: config.releaseNotes,
