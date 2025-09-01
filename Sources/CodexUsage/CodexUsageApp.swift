@@ -117,7 +117,7 @@ struct MenuBarContent: View {
             if viewModel.snapshot.constrainedRemainingPercent == nil {
                 EmptyStateView(snapshot: viewModel.snapshot)
             } else {
-                LimitSummaryView(snapshot: viewModel.snapshot, health: health)
+                LimitSummaryView(snapshot: viewModel.snapshot)
                 TokenSummaryView(points: viewModel.trendPoints)
                 UsageTrendChartView(
                     points: viewModel.trendPoints,
@@ -244,56 +244,17 @@ final class SettingsWindowPresenter {
 
 struct LimitSummaryView: View {
     var snapshot: CodexUsageSnapshot
-    var health: UsageHealth
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 14) {
-                UsageRing(progress: progressValue, tint: health.tint)
-
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(alignment: .lastTextBaseline, spacing: 5) {
-                        Text(UsageFormatters.percent(snapshot.constrainedRemainingPercent))
-                            .font(.system(size: 38, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-
-                        Text("剩余")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text(constrainedDescription)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
+        VStack(spacing: 10) {
+            if let primary = snapshot.primary {
+                RateWindowRow(window: primary)
             }
 
-            VStack(spacing: 10) {
-                if let primary = snapshot.primary {
-                    RateWindowRow(window: primary)
-                }
-
-                if let secondary = snapshot.secondary {
-                    RateWindowRow(window: secondary)
-                }
+            if let secondary = snapshot.secondary {
+                RateWindowRow(window: secondary)
             }
         }
-    }
-
-    private var progressValue: Double {
-        guard let remaining = snapshot.constrainedRemainingPercent else { return 0 }
-        return max(0, min(1, remaining / 100))
-    }
-
-    private var constrainedDescription: String {
-        guard let window = snapshot.mostConstrainedWindow else {
-            return "等待本地用量快照"
-        }
-
-        return "\(window.displayName) 最紧张 · \(UsageFormatters.resetText(window.resetsAt))"
     }
 }
 
@@ -588,29 +549,6 @@ struct EmptyStateView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(.separator.opacity(0.35), lineWidth: 1)
         )
-    }
-}
-
-struct UsageRing: View {
-    var progress: Double
-    var tint: Color
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(.quaternary, lineWidth: 7)
-
-            Circle()
-                .trim(from: 0, to: progress)
-                .stroke(tint, style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-
-            Image(systemName: "bolt.fill")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(tint)
-        }
-        .frame(width: 58, height: 58)
-        .accessibilityHidden(true)
     }
 }
 
