@@ -41,6 +41,13 @@ struct RateWindow: Codable, Equatable, Identifiable {
     }
 }
 
+struct ResetCardInfo: Codable, Equatable {
+    var hasCards: Bool?
+    var unlimited: Bool
+    var balance: Int?
+    var expiresAt: Date?
+}
+
 enum CodexRateWindowKind {
     case primary
     case secondary
@@ -90,6 +97,7 @@ struct CodexUsageSnapshot: Codable, Equatable {
     var limitId: String?
     var primary: RateWindow?
     var secondary: RateWindow?
+    var resetCards: ResetCardInfo?
     var tokenUsage: TokenUsage
     var source: String
 
@@ -99,6 +107,7 @@ struct CodexUsageSnapshot: Codable, Equatable {
         limitId: nil,
         primary: nil,
         secondary: nil,
+        resetCards: nil,
         tokenUsage: .empty,
         source: "未找到本地 Codex 用量快照"
     )

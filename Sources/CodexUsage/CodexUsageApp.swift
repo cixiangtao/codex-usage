@@ -254,6 +254,8 @@ struct LimitSummaryView: View {
             if let secondary = snapshot.secondary {
                 RateWindowRow(window: secondary)
             }
+
+            ResetCardSummaryView(info: snapshot.resetCards)
         }
     }
 }
@@ -322,6 +324,89 @@ struct RateWindowRow: View {
         default:
             .green
         }
+    }
+}
+
+struct ResetCardSummaryView: View {
+    var info: ResetCardInfo?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.counterclockwise.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 26, height: 26)
+                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("重置卡")
+                        .font(.subheadline.weight(.semibold))
+
+                    Spacer()
+
+                    Text(countText)
+                        .font(.subheadline.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(tint)
+                }
+
+                Text(expirationText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(.separator.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private var countText: String {
+        guard let info else { return "未知" }
+
+        if info.unlimited {
+            return "不限次数"
+        }
+
+        if let balance = info.balance {
+            return "剩余 \(balance) 次"
+        }
+
+        if info.hasCards == true {
+            return "可用"
+        }
+
+        if info.hasCards == false {
+            return "暂无可用"
+        }
+
+        return "未知"
+    }
+
+    private var expirationText: String {
+        guard let expiresAt = info?.expiresAt else {
+            return "过期时间未提供"
+        }
+
+        let now = Date()
+        if expiresAt <= now {
+            return "已过期 · \(UsageFormatters.fullDateTime(expiresAt))"
+        }
+
+        return "\(UsageFormatters.relativeDateString(for: expiresAt, relativeTo: now))后过期 · \(UsageFormatters.fullDateTime(expiresAt))"
+    }
+
+    private var tint: Color {
+        guard let info else { return .secondary }
+
+        if info.unlimited || (info.balance.map { $0 > 0 } ?? (info.hasCards == true)) {
+            return .accentColor
+        }
+
+        return .secondary
     }
 }
 

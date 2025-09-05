@@ -2,15 +2,27 @@ import Foundation
 import SQLite3
 
 protocol UsageProvider: Sendable {
-    func fetchLatestSnapshot(codexHomePath: String) throws -> CodexUsageSnapshot
+    func fetchLatestSnapshot(codexHomePath: String) async throws -> CodexUsageSnapshot
     func fetchTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint]
 }
 
 struct CodexJSONLUsageProvider: UsageProvider {
+    private let generalUsageLimitId = "codex"
     private let maxBytesPerFile = UInt64(600_000)
     private let maxTrendDays = 30
 
-    func fetchLatestSnapshot(codexHomePath: String) throws -> CodexUsageSnapshot {
+    func fetchLatestSnapshot(codexHomePath: String) async throws -> CodexUsageSnapshot {
+        var snapshot = try fetchLatestLocalSnapshot(codexHomePath: codexHomePath)
+
+        if var liveResetCards = try? await fetchLiveResetCards(codexHomePath: codexHomePath) {
+            liveResetCards.expiresAt = liveResetCards.expiresAt ?? snapshot.resetCards?.expiresAt
+            snapshot.resetCards = liveResetCards
+        }
+
+        return snapshot
+    }
+
+    private func fetchLatestLocalSnapshot(codexHomePath: String) throws -> CodexUsageSnapshot {
         let sessionsURL = URL(fileURLWithPath: codexHomePath)
             .appendingPathComponent("sessions", isDirectory: true)
 
@@ -25,6 +37,61 @@ struct CodexJSONLUsageProvider: UsageProvider {
         }
 
         return newest.snapshot
+    }
+
+    private func fetchLiveResetCards(codexHomePath: String) async throws -> ResetCardInfo? {
+        guard let credentials = try loadAuthCredentials(codexHomePath: codexHomePath) else {
+            return nil
+        }
+
+        guard let url = URL(string: "https://chatgpt.com/backend-api/codex/usage") else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 8
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("CodexUsage/1.0", forHTTPHeaderField: "User-Agent")
+
+        if let accountId = credentials.accountId {
+            request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-ID")
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            return nil
+        }
+
+        let usage = try JSONDecoder().decode(CodexUsageAPIResponse.self, from: data)
+        guard let availableCount = usage.rateLimitResetCredits?.availableCount else {
+            return nil
+        }
+
+        return ResetCardInfo(
+            hasCards: availableCount > 0,
+            unlimited: false,
+            balance: availableCount,
+            expiresAt: nil
+        )
+    }
+
+    private func loadAuthCredentials(codexHomePath: String) throws -> CodexAuthCredentials? {
+        let authURL = URL(fileURLWithPath: codexHomePath)
+            .appendingPathComponent("auth.json")
+
+        let data = try Data(contentsOf: authURL)
+        let auth = try JSONDecoder().decode(CodexAuthFile.self, from: data)
+        guard let accessToken = auth.tokens?.accessToken, !accessToken.isEmpty else {
+            return nil
+        }
+
+        return CodexAuthCredentials(
+            accessToken: accessToken,
+            accountId: auth.tokens?.accountId
+        )
     }
 
     func fetchTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint] {
@@ -146,7 +213,8 @@ struct CodexJSONLUsageProvider: UsageProvider {
                     continue
                 }
 
-                if let event = parseTokenEvent(from: line, sourceURL: file.url) {
+                if let event = parseTokenEvent(from: line, sourceURL: file.url),
+                   isGeneralUsageLimit(event.snapshot) {
                     return event
                 }
             }
@@ -217,6 +285,7 @@ struct CodexJSONLUsageProvider: UsageProvider {
                 rateLimits?["secondary"] as? [String: Any],
                 kind: .secondary
             ),
+            resetCards: parseResetCards(rateLimits?["credits"] as? [String: Any]),
             tokenUsage: tokenUsage,
             source: sourceURL.lastPathComponent
         )
@@ -238,6 +307,28 @@ struct CodexJSONLUsageProvider: UsageProvider {
         )
     }
 
+    private func parseResetCards(_ object: [String: Any]?) -> ResetCardInfo? {
+        guard let object else { return nil }
+
+        return ResetCardInfo(
+            hasCards: optionalBoolValue(object["has_credits"]),
+            unlimited: boolValue(object["unlimited"]),
+            balance: optionalIntValue(object["balance"]),
+            expiresAt: firstDateValue(
+                in: object,
+                keys: [
+                    "expires_at",
+                    "expiresAt",
+                    "expiration",
+                    "expiration_at",
+                    "expiration_date",
+                    "valid_until",
+                    "validUntil"
+                ]
+            )
+        )
+    }
+
     private func parseWindow(_ object: [String: Any]?, kind: CodexRateWindowKind) -> RateWindow? {
         guard let object, let usedPercent = doubleValue(object["used_percent"]) else {
             return nil
@@ -252,6 +343,10 @@ struct CodexJSONLUsageProvider: UsageProvider {
             windowMinutes: windowMinutes,
             resetsAt: resetSeconds.map { Date(timeIntervalSince1970: $0) }
         )
+    }
+
+    private func isGeneralUsageLimit(_ snapshot: CodexUsageSnapshot) -> Bool {
+        snapshot.limitId == generalUsageLimitId
     }
 
     private func dailyTrendPoints(from events: [ParsedTokenEvent], cutoffDate: Date) -> [UsageTrendPoint] {
@@ -304,6 +399,37 @@ struct CodexJSONLUsageProvider: UsageProvider {
         return nil
     }
 
+    private func boolValue(_ value: Any?) -> Bool {
+        optionalBoolValue(value) ?? false
+    }
+
+    private func optionalBoolValue(_ value: Any?) -> Bool? {
+        if let value = value as? Bool {
+            return value
+        }
+
+        if let value = value as? Int {
+            return value != 0
+        }
+
+        if let value = value as? Double {
+            return value != 0
+        }
+
+        if let value = value as? String {
+            switch value.lowercased() {
+            case "true", "yes", "1":
+                return true
+            case "false", "no", "0":
+                return false
+            default:
+                return nil
+            }
+        }
+
+        return nil
+    }
+
     private func doubleValue(_ value: Any?) -> Double? {
         if let value = value as? Double {
             return value
@@ -319,12 +445,80 @@ struct CodexJSONLUsageProvider: UsageProvider {
 
         return nil
     }
+
+    private func firstDateValue(in object: [String: Any], keys: [String]) -> Date? {
+        for key in keys {
+            if let date = dateValue(object[key]) {
+                return date
+            }
+        }
+
+        return nil
+    }
+
+    private func dateValue(_ value: Any?) -> Date? {
+        if let seconds = doubleValue(value) {
+            return Date(timeIntervalSince1970: seconds)
+        }
+
+        if let value = value as? String {
+            return DateParsers.parse(value)
+        }
+
+        return nil
+    }
 }
 
 private struct ParsedTokenEvent {
     var timestamp: Date
     var tokenDelta: Int
     var snapshot: CodexUsageSnapshot
+}
+
+private struct CodexAuthFile: Decodable {
+    var tokens: CodexAuthTokens?
+}
+
+private struct CodexAuthTokens: Decodable {
+    var accessToken: String?
+    var accountId: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case accountId = "account_id"
+    }
+}
+
+private struct CodexAuthCredentials {
+    var accessToken: String
+    var accountId: String?
+}
+
+private struct CodexUsageAPIResponse: Decodable {
+    var rateLimitResetCredits: CodexRateLimitResetCredits?
+
+    private enum CodingKeys: String, CodingKey {
+        case rateLimitResetCredits = "rate_limit_reset_credits"
+    }
+}
+
+private struct CodexRateLimitResetCredits: Decodable {
+    var availableCount: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case availableCount = "available_count"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let value = try? container.decode(Int.self, forKey: .availableCount) {
+            availableCount = value
+        } else if let value = try? container.decode(String.self, forKey: .availableCount) {
+            availableCount = Int(value)
+        } else {
+            availableCount = nil
+        }
+    }
 }
 
 private struct JSONLFile {

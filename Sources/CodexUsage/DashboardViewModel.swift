@@ -61,7 +61,7 @@ final class DashboardViewModel: ObservableObject {
 
         do {
             let nextSnapshot = try await Task.detached(priority: .userInitiated) {
-                try provider.fetchLatestSnapshot(codexHomePath: codexHomePath)
+                try await provider.fetchLatestSnapshot(codexHomePath: codexHomePath)
             }.value
 
             snapshot = nextSnapshot

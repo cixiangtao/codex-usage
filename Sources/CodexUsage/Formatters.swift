@@ -55,6 +55,10 @@ enum UsageFormatters {
         fullDateFormatter.string(from: date)
     }
 
+    static func fullDateTime(_ date: Date) -> String {
+        fullDateTimeFormatter.string(from: date)
+    }
+
     private static let shortDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "M/d"
@@ -64,6 +68,12 @@ enum UsageFormatters {
     private static let fullDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy/M/d"
+        return formatter
+    }()
+
+    private static let fullDateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy/M/d HH:mm"
         return formatter
     }()
 }
