@@ -73,7 +73,7 @@ unset GITLAB_TOKEN
 GITLAB_TOKEN=你的 GitLab token
 ```
 
-脚本会读取 `package.json` 的当前版本，交互式选择 patch、minor、major、current 或 custom 版本，并用 `semver` 校验版本号。确认后会同步 `package.json`/`bun.lock` 版本，生成 `dist/CodexUsage-vX.Y.Z.zip`，上传到 GitLab Generic Package Registry，并把 zip 挂到对应 GitLab Release 的 asset 上。`GITLAB_TOKEN` 会优先从环境变量读取，也会自动读取本机 `.env.local`；如果都没有设置，交互式命令会隐藏输入 token，不要写入仓库。
+本地发布由 `release-it` 编排。脚本会读取 `package.json` 的当前版本，交互式选择 patch、minor、major 或 custom 版本；确认后先用目标版本打包并生成 `dist/CodexUsage-vX.Y.Z.zip`。打包成功后才会更新 `package.json`/`bun.lock`、创建 release commit、打 `vX.Y.Z` tag、push，并把 zip 上传到 GitLab Generic Package Registry 后挂到对应 GitLab Release 的 asset 上。打包失败时版本文件不会被修改。`GITLAB_TOKEN` 会优先从环境变量读取，也会自动读取本机 `.env.local`；如果你只有 `PRIVATE_TOKEN`，脚本会兼容映射为 `GITLAB_TOKEN`。
 
 也可以跳过交互，直接指定版本和发布说明：
 
