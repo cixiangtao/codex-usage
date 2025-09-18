@@ -109,7 +109,7 @@ struct CodexUsageSnapshot: Codable, Equatable {
         secondary: nil,
         resetCards: nil,
         tokenUsage: .empty,
-        source: "未找到本地 Codex 用量快照"
+        source: "未找到 Codex 用量快照"
     )
 
     var constrainedRemainingPercent: Double? {

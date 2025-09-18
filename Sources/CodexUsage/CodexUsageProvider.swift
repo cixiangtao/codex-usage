@@ -3,23 +3,27 @@ import SQLite3
 
 protocol UsageProvider: Sendable {
     func fetchLatestSnapshot(codexHomePath: String) async throws -> CodexUsageSnapshot
-    func fetchTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint]
+    func fetchTrendPoints(codexHomePath: String, relativeTo date: Date) async throws -> [UsageTrendPoint]
 }
 
-struct CodexJSONLUsageProvider: UsageProvider {
+struct CodexUsageProvider: UsageProvider {
     private let generalUsageLimitId = "codex"
     private let maxBytesPerFile = UInt64(600_000)
     private let maxTrendDays = 30
 
     func fetchLatestSnapshot(codexHomePath: String) async throws -> CodexUsageSnapshot {
-        var snapshot = try fetchLatestLocalSnapshot(codexHomePath: codexHomePath)
+        let localSnapshot = try fetchLatestLocalSnapshot(codexHomePath: codexHomePath)
 
-        if var liveResetCards = try? await fetchLiveResetCards(codexHomePath: codexHomePath) {
-            liveResetCards.expiresAt = liveResetCards.expiresAt ?? snapshot.resetCards?.expiresAt
-            snapshot.resetCards = liveResetCards
+        guard var remoteSnapshot = try? await fetchLatestRemoteSnapshot(codexHomePath: codexHomePath) else {
+            return localSnapshot
         }
 
-        return snapshot
+        remoteSnapshot.tokenUsage = localSnapshot.tokenUsage
+        if remoteSnapshot.resetCards?.expiresAt == nil {
+            remoteSnapshot.resetCards?.expiresAt = localSnapshot.resetCards?.expiresAt
+        }
+
+        return remoteSnapshot
     }
 
     private func fetchLatestLocalSnapshot(codexHomePath: String) throws -> CodexUsageSnapshot {
@@ -39,14 +43,24 @@ struct CodexJSONLUsageProvider: UsageProvider {
         return newest.snapshot
     }
 
-    private func fetchLiveResetCards(codexHomePath: String) async throws -> ResetCardInfo? {
-        guard let credentials = try loadAuthCredentials(codexHomePath: codexHomePath) else {
-            return nil
+    private func fetchLatestRemoteSnapshot(codexHomePath: String) async throws -> CodexUsageSnapshot {
+        let credentials = try loadAuthCredentials(codexHomePath: codexHomePath)
+        let usage = try await fetchRemoteUsage(credentials: credentials)
+        let resetCards = try? await fetchRemoteResetCards(credentials: credentials)
+        guard let snapshot = makeRemoteSnapshot(from: usage, resetCards: resetCards) else {
+            throw UsageProviderError.noRemoteRateLimits
         }
 
-        guard let url = URL(string: "https://chatgpt.com/backend-api/codex/usage") else {
-            return nil
-        }
+        return snapshot
+    }
+
+    private func fetchRemoteUsage(credentials: CodexAuthCredentials) async throws -> CodexUsageAPIResponse {
+        let data = try await fetchRemoteUsageData(credentials: credentials)
+        return try JSONDecoder().decode(CodexUsageAPIResponse.self, from: data)
+    }
+
+    private func fetchRemoteUsageData(credentials: CodexAuthCredentials) async throws -> Data {
+        let url = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -61,31 +75,53 @@ struct CodexJSONLUsageProvider: UsageProvider {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+              (200...299).contains(httpResponse.statusCode) else {
+            throw UsageProviderError.remoteStatusCode((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+
+        return data
+    }
+
+    private func fetchRemoteResetCards(credentials: CodexAuthCredentials) async throws -> ResetCardInfo? {
+        let url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 4
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("CodexUsage/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("codex-1", forHTTPHeaderField: "OpenAI-Beta")
+        request.setValue("Codex Desktop", forHTTPHeaderField: "originator")
+
+        if let accountId = credentials.accountId {
+            request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-ID")
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
             return nil
         }
 
-        let usage = try JSONDecoder().decode(CodexUsageAPIResponse.self, from: data)
-        guard let availableCount = usage.rateLimitResetCredits?.availableCount else {
-            return nil
-        }
+        let payload = try JSONDecoder().decode(CodexRateLimitResetCreditsResponse.self, from: data)
 
         return ResetCardInfo(
-            hasCards: availableCount > 0,
+            hasCards: payload.availableCount > 0,
             unlimited: false,
-            balance: availableCount,
+            balance: payload.availableCount,
             expiresAt: nil
         )
     }
 
-    private func loadAuthCredentials(codexHomePath: String) throws -> CodexAuthCredentials? {
+    private func loadAuthCredentials(codexHomePath: String) throws -> CodexAuthCredentials {
         let authURL = URL(fileURLWithPath: codexHomePath)
             .appendingPathComponent("auth.json")
 
         let data = try Data(contentsOf: authURL)
         let auth = try JSONDecoder().decode(CodexAuthFile.self, from: data)
         guard let accessToken = auth.tokens?.accessToken, !accessToken.isEmpty else {
-            return nil
+            throw UsageProviderError.missingAuthToken
         }
 
         return CodexAuthCredentials(
@@ -94,7 +130,24 @@ struct CodexJSONLUsageProvider: UsageProvider {
         )
     }
 
-    func fetchTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint] {
+    func fetchTrendPoints(codexHomePath: String, relativeTo date: Date) async throws -> [UsageTrendPoint] {
+        if let remotePoints = try? await fetchRemoteTrendPoints(codexHomePath: codexHomePath, relativeTo: date),
+           !remotePoints.isEmpty {
+            return remotePoints
+        }
+
+        return try fetchLocalTrendPoints(codexHomePath: codexHomePath, relativeTo: date)
+    }
+
+    private func fetchRemoteTrendPoints(codexHomePath: String, relativeTo date: Date) async throws
+        -> [UsageTrendPoint]?
+    {
+        let credentials = try loadAuthCredentials(codexHomePath: codexHomePath)
+        let data = try await fetchRemoteUsageData(credentials: credentials)
+        return remoteTrendPoints(from: data, relativeTo: date)
+    }
+
+    private func fetchLocalTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint] {
         let sessionsURL = URL(fileURLWithPath: codexHomePath)
             .appendingPathComponent("sessions", isDirectory: true)
 
@@ -345,6 +398,57 @@ struct CodexJSONLUsageProvider: UsageProvider {
         )
     }
 
+    private func makeRemoteSnapshot(
+        from response: CodexUsageAPIResponse,
+        resetCards: ResetCardInfo?
+    ) -> CodexUsageSnapshot? {
+        let primary = makeRemoteWindow(response.rateLimit?.primaryWindow, kind: .primary)
+        let secondary = makeRemoteWindow(response.rateLimit?.secondaryWindow, kind: .secondary)
+        guard primary != nil || secondary != nil || resetCards != nil || response.credits != nil else {
+            return nil
+        }
+
+        return CodexUsageSnapshot(
+            capturedAt: Date(),
+            planType: response.planType,
+            limitId: generalUsageLimitId,
+            primary: primary,
+            secondary: secondary,
+            resetCards: resetCards ?? makeRemoteCreditCards(response.credits),
+            tokenUsage: .empty,
+            source: "OpenAI OAuth API"
+        )
+    }
+
+    private func makeRemoteWindow(_ window: CodexUsageAPIResponse.RateLimitWindow?, kind: CodexRateWindowKind)
+        -> RateWindow?
+    {
+        guard let window else {
+            return nil
+        }
+
+        let windowMinutes = window.limitWindowSeconds.map { $0 / 60 }
+        return RateWindow(
+            name: windowMinutes.map(CodexRateWindowKind.displayName(minutes:)) ?? kind.defaultDisplayName,
+            usedPercent: window.usedPercent,
+            windowMinutes: windowMinutes,
+            resetsAt: window.resetAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        )
+    }
+
+    private func makeRemoteCreditCards(_ credits: CodexUsageAPIResponse.Credits?) -> ResetCardInfo? {
+        guard let credits else {
+            return nil
+        }
+
+        return ResetCardInfo(
+            hasCards: credits.hasCredits,
+            unlimited: credits.unlimited,
+            balance: credits.balance,
+            expiresAt: nil
+        )
+    }
+
     private func isGeneralUsageLimit(_ snapshot: CodexUsageSnapshot) -> Bool {
         snapshot.limitId == generalUsageLimitId
     }
@@ -377,6 +481,75 @@ struct CodexJSONLUsageProvider: UsageProvider {
                 totalTokens: totalsByDay[day, default: 0]
             )
         }
+    }
+
+    private func remoteTrendPoints(from data: Data, relativeTo date: Date) -> [UsageTrendPoint]? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) else {
+            return nil
+        }
+
+        var totalsByDay: [Date: Int] = [:]
+        collectRemoteDailyTokenTotals(from: root, into: &totalsByDay)
+        guard !totalsByDay.isEmpty else {
+            return nil
+        }
+
+        let calendar = Calendar.current
+        let latestDay = calendar.startOfDay(for: date)
+        let startOffset = -(maxTrendDays - 1)
+        guard let firstDay = calendar.date(byAdding: .day, value: startOffset, to: latestDay) else {
+            return nil
+        }
+
+        return (0..<maxTrendDays).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: firstDay) else {
+                return nil
+            }
+
+            return UsageTrendPoint(
+                capturedAt: day,
+                totalTokens: totalsByDay[day, default: 0]
+            )
+        }
+    }
+
+    private func collectRemoteDailyTokenTotals(from value: Any, into totalsByDay: inout [Date: Int]) {
+        if let array = value as? [Any] {
+            for item in array {
+                collectRemoteDailyTokenTotals(from: item, into: &totalsByDay)
+            }
+            return
+        }
+
+        guard let object = value as? [String: Any] else {
+            return
+        }
+
+        if let day = firstDateValue(
+            in: object,
+            keys: ["day", "date", "captured_at", "capturedAt", "created_at", "createdAt"]
+        ),
+           let totalTokens = firstIntValue(
+               in: object,
+               keys: ["total_tokens", "totalTokens", "tokens_used", "tokensUsed"]
+           ),
+           totalTokens > 0 {
+            totalsByDay[Calendar.current.startOfDay(for: day), default: 0] += totalTokens
+        }
+
+        for nested in object.values {
+            collectRemoteDailyTokenTotals(from: nested, into: &totalsByDay)
+        }
+    }
+
+    private func firstIntValue(in object: [String: Any], keys: [String]) -> Int? {
+        for key in keys {
+            if let value = optionalIntValue(object[key]) {
+                return value
+            }
+        }
+
+        return nil
     }
 
     private func intValue(_ value: Any?) -> Int {
@@ -495,15 +668,136 @@ private struct CodexAuthCredentials {
 }
 
 private struct CodexUsageAPIResponse: Decodable {
-    var rateLimitResetCredits: CodexRateLimitResetCredits?
+    var planType: String?
+    var rateLimit: RateLimit?
+    var credits: Credits?
 
     private enum CodingKeys: String, CodingKey {
-        case rateLimitResetCredits = "rate_limit_reset_credits"
+        case planType = "plan_type"
+        case rateLimit = "rate_limit"
+        case credits
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        planType = try? container.decodeIfPresent(String.self, forKey: .planType)
+        rateLimit = try? container.decodeIfPresent(RateLimit.self, forKey: .rateLimit)
+        credits = try? container.decodeIfPresent(Credits.self, forKey: .credits)
+    }
+
+    struct RateLimit: Decodable {
+        var primaryWindow: RateLimitWindow?
+        var secondaryWindow: RateLimitWindow?
+
+        private enum CodingKeys: String, CodingKey {
+            case primaryWindow = "primary_window"
+            case secondaryWindow = "secondary_window"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            primaryWindow = try? container.decodeIfPresent(RateLimitWindow.self, forKey: .primaryWindow)
+            secondaryWindow = try? container.decodeIfPresent(RateLimitWindow.self, forKey: .secondaryWindow)
+        }
+    }
+
+    struct RateLimitWindow: Decodable {
+        var usedPercent: Double
+        var resetAt: Int?
+        var limitWindowSeconds: Int?
+
+        private enum CodingKeys: String, CodingKey {
+            case usedPercent = "used_percent"
+            case resetAt = "reset_at"
+            case limitWindowSeconds = "limit_window_seconds"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            guard let usedPercent = Self.decodeFlexibleDouble(container, forKey: .usedPercent) else {
+                throw DecodingError.keyNotFound(
+                    CodingKeys.usedPercent,
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "Missing used_percent"
+                    )
+                )
+            }
+
+            self.usedPercent = usedPercent
+            resetAt = Self.decodeFlexibleInt(container, forKey: .resetAt)
+            limitWindowSeconds = Self.decodeFlexibleInt(container, forKey: .limitWindowSeconds)
+        }
+
+        private static func decodeFlexibleDouble(
+            _ container: KeyedDecodingContainer<CodingKeys>,
+            forKey key: CodingKeys
+        ) -> Double? {
+            if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+                return value
+            }
+
+            if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+                return Double(value)
+            }
+
+            if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+
+            return nil
+        }
+
+        private static func decodeFlexibleInt(
+            _ container: KeyedDecodingContainer<CodingKeys>,
+            forKey key: CodingKeys
+        ) -> Int? {
+            if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+                return value
+            }
+
+            if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+                return Int(value)
+            }
+
+            if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+
+            return nil
+        }
+    }
+
+    struct Credits: Decodable {
+        var hasCredits: Bool?
+        var unlimited: Bool
+        var balance: Int?
+
+        private enum CodingKeys: String, CodingKey {
+            case hasCredits = "has_credits"
+            case unlimited
+            case balance
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            hasCredits = try? container.decodeIfPresent(Bool.self, forKey: .hasCredits)
+            unlimited = (try? container.decodeIfPresent(Bool.self, forKey: .unlimited)) ?? false
+            if let value = try? container.decodeIfPresent(Int.self, forKey: .balance) {
+                balance = value
+            } else if let value = try? container.decodeIfPresent(Double.self, forKey: .balance) {
+                balance = Int(value)
+            } else if let value = try? container.decodeIfPresent(String.self, forKey: .balance) {
+                balance = Int(value)
+            } else {
+                balance = nil
+            }
+        }
     }
 }
 
-private struct CodexRateLimitResetCredits: Decodable {
-    var availableCount: Int?
+private struct CodexRateLimitResetCreditsResponse: Decodable {
+    var availableCount: Int
 
     private enum CodingKeys: String, CodingKey {
         case availableCount = "available_count"
@@ -514,9 +808,26 @@ private struct CodexRateLimitResetCredits: Decodable {
         if let value = try? container.decode(Int.self, forKey: .availableCount) {
             availableCount = value
         } else if let value = try? container.decode(String.self, forKey: .availableCount) {
-            availableCount = Int(value)
+            availableCount = Int(value) ?? 0
         } else {
-            availableCount = nil
+            availableCount = 0
+        }
+    }
+}
+
+private enum UsageProviderError: LocalizedError {
+    case missingAuthToken
+    case noRemoteRateLimits
+    case remoteStatusCode(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingAuthToken:
+            "Codex auth.json exists but does not contain an access token."
+        case .noRemoteRateLimits:
+            "OpenAI Codex usage API returned no rate-limit windows."
+        case let .remoteStatusCode(statusCode):
+            "OpenAI Codex usage API returned HTTP \(statusCode)."
         }
     }
 }

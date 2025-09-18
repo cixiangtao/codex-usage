@@ -618,7 +618,7 @@ struct EmptyStateView: View {
                     .font(.subheadline.weight(.semibold))
             }
 
-            Text("先运行一次 Codex，然后刷新。应用只会读取本地会话日志里的 token-count 用量事件。")
+            Text("先运行一次 Codex，然后刷新。应用会优先读取接口数据，必要时回退本地会话日志。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

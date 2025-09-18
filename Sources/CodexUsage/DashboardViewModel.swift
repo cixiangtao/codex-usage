@@ -13,7 +13,7 @@ final class DashboardViewModel: ObservableObject {
     private var refreshTask: Task<Void, Never>?
 
     init(
-        provider: UsageProvider = CodexJSONLUsageProvider(),
+        provider: UsageProvider = CodexUsageProvider(),
         sharedStore: SharedSnapshotStore = SharedSnapshotStore(),
         notificationManager: NotificationManager = NotificationManager()
     ) {
@@ -81,7 +81,7 @@ final class DashboardViewModel: ObservableObject {
             )
 
             trendPoints = try await Task.detached(priority: .utility) {
-                try provider.fetchTrendPoints(
+                try await provider.fetchTrendPoints(
                     codexHomePath: codexHomePath,
                     relativeTo: nextSnapshot.capturedAt
                 )

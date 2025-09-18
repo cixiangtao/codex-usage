@@ -1,20 +1,22 @@
 # Codex 用量
 
-一个原生 macOS 状态栏应用，用于展示本地 Codex 最新用量快照，包括剩余百分比、重置时间、通知提醒，以及可供 WidgetKit 小组件读取的共享状态。
+一个原生 macOS 状态栏应用，用于展示 Codex 最新用量快照，包括剩余百分比、重置时间、通知提醒，以及可供 WidgetKit 小组件读取的共享状态。
 
 ## 当前功能
 
 - 状态栏显示 Codex 剩余额度。
 - 状态栏默认同时显示 `5h` 和 `7d` 剩余额度，使用 `5h 86% · 7d 88%` 这类紧凑格式；也可在设置中勾选要展示的窗口，并控制是否展示窗口标签。
 - 展开面板查看 `5h` / `7d` 额度窗口。
-- 后台解析 `~/.codex/sessions/**/*.jsonl` 中的 token-count 事件，避免刷新时卡住界面。
+- 优先通过 Codex OAuth 凭据读取服务端用量窗口，失败时回退解析本地 `~/.codex/sessions/**/*.jsonl` 中的 token-count 事件。
 - 支持低剩余额度通知阈值。
 - 保存共享快照，供 WidgetKit 小组件读取。
 - `WidgetExtension/` 中提供小组件源码骨架。
 
 ## 数据来源说明
 
-OpenAI 当前 Codex 文档描述了套餐访问、本地登录、API Key 计费和 Enterprise 审计/监控 API，但没有公开个人 Plus/Pro/Go 套餐精确剩余额度查询 API。因此应用会读取 Codex 已经写入本地会话日志的结构化 `rate_limits` 快照。每日 token 趋势优先读取 `~/.codex/state_5.sqlite` 中的线程级 `tokens_used` 汇总，以贴近 Codex 个人资料页统计；如果该数据库不可用，再回退解析 `~/.codex/sessions/**/*.jsonl` 的 token-count 事件。由于个人资料页统计来自服务端口径，本地趋势仍可能有轻微差异。它不会读取 `~/.codex/auth.json`。
+应用会优先读取 `~/.codex/auth.json` 中 Codex CLI 已保存的 OAuth access token，并直接请求 `chatgpt.com` 的 Codex 用量接口获取 5h / 7d 用量窗口和重置卡信息。它不会读取、保存或上传密码，也不会把 token 写入应用自己的配置。
+
+如果 OAuth 凭据不存在、过期或接口不可用，应用会回退读取 Codex 已经写入本地会话日志的结构化 `rate_limits` 快照。每日 token 趋势同样会先尝试接口数据；如果接口没有提供可用的每日 token 明细，再读取 `~/.codex/state_5.sqlite` 中的线程级 `tokens_used` 汇总；如果该数据库不可用，最后回退解析 `~/.codex/sessions/**/*.jsonl` 的 token-count 事件。由于个人资料页统计来自服务端口径，本地趋势仍可能有轻微差异。
 
 ## 本地运行
 
