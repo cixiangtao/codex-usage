@@ -91,7 +91,7 @@ bun run release:local -- 1.2.3 "Release notes"
 https://gitlab-ee.zhenguanyu.com/api/v4/projects/cixiangtao%2Fcodex-usage/releases/permalink/latest
 ```
 
-应用会读取本地 `CFBundleShortVersionString`，和最新 Release 的 tag 版本比较；tag 建议使用 `v1.2.3` 这种语义化版本。检测到新版本后，设置页会提供下载入口，优先打开 Release asset 中的 `.zip` 包。
+应用会读取本地 `CFBundleShortVersionString`，和最新 Release 的 tag 版本比较；tag 建议使用 `v1.2.3` 这种语义化版本。检测到新版本后，如果 Release asset 中包含 `CodexUsage*.zip`，设置页会提供“下载并安装”：应用会自动下载 zip、解压出新的 `.app`、退出当前进程、替换应用并重新打开。通过 `swift run` 启动的开发环境不能替换自身，会回退为打开发布页。
 
 如果仓库是私有项目，app 内请求 GitLab API 时没有浏览器登录态，可能会检测失败。要公开分发时，可以把项目 Release 设为可匿名读取，或改为由 GitLab Pages 发布一个公开的 `latest.json` 更新清单。
 

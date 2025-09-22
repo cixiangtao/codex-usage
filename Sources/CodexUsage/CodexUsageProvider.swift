@@ -18,6 +18,9 @@ struct CodexUsageProvider: UsageProvider {
             return localSnapshot
         }
 
+        if remoteSnapshot.accountIdentifier == nil {
+            remoteSnapshot.accountIdentifier = localSnapshot.accountIdentifier
+        }
         remoteSnapshot.tokenUsage = localSnapshot.tokenUsage
         if remoteSnapshot.resetCards?.expiresAt == nil {
             remoteSnapshot.resetCards?.expiresAt = localSnapshot.resetCards?.expiresAt
@@ -51,7 +54,9 @@ struct CodexUsageProvider: UsageProvider {
             throw UsageProviderError.noRemoteRateLimits
         }
 
-        return snapshot
+        var snapshotWithAccount = snapshot
+        snapshotWithAccount.accountIdentifier = usage.accountIdentifier ?? credentials.loginIdentifier
+        return snapshotWithAccount
     }
 
     private func fetchRemoteUsage(credentials: CodexAuthCredentials) async throws -> CodexUsageAPIResponse {
@@ -110,7 +115,7 @@ struct CodexUsageProvider: UsageProvider {
             hasCards: payload.availableCount > 0,
             unlimited: false,
             balance: payload.availableCount,
-            expiresAt: nil
+            expiresAt: payload.expiresAt
         )
     }
 
@@ -126,7 +131,8 @@ struct CodexUsageProvider: UsageProvider {
 
         return CodexAuthCredentials(
             accessToken: accessToken,
-            accountId: auth.tokens?.accountId
+            accountId: auth.tokens?.accountId,
+            loginIdentifier: auth.tokens?.loginIdentifier
         )
     }
 
@@ -328,6 +334,21 @@ struct CodexUsageProvider: UsageProvider {
 
         let snapshot = CodexUsageSnapshot(
             capturedAt: timestamp,
+            accountIdentifier: firstStringValue(
+                in: [
+                    rateLimits,
+                    payload,
+                    info
+                ],
+                keys: [
+                    "email",
+                    "user_email",
+                    "userEmail",
+                    "phone_number",
+                    "phoneNumber",
+                    "phone"
+                ]
+            ),
             planType: rateLimits?["plan_type"] as? String,
             limitId: rateLimits?["limit_id"] as? String,
             primary: parseWindow(
@@ -410,6 +431,7 @@ struct CodexUsageProvider: UsageProvider {
 
         return CodexUsageSnapshot(
             capturedAt: Date(),
+            accountIdentifier: response.accountIdentifier,
             planType: response.planType,
             limitId: generalUsageLimitId,
             primary: primary,
@@ -445,7 +467,7 @@ struct CodexUsageProvider: UsageProvider {
             hasCards: credits.hasCredits,
             unlimited: credits.unlimited,
             balance: credits.balance,
-            expiresAt: nil
+            expiresAt: credits.expiresAt
         )
     }
 
@@ -547,6 +569,35 @@ struct CodexUsageProvider: UsageProvider {
             if let value = optionalIntValue(object[key]) {
                 return value
             }
+        }
+
+        return nil
+    }
+
+    private func firstStringValue(in objects: [[String: Any]?], keys: [String]) -> String? {
+        for object in objects.compactMap({ $0 }) {
+            if let value = firstStringValue(in: object, keys: keys) {
+                return value
+            }
+        }
+
+        return nil
+    }
+
+    private func firstStringValue(in object: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = optionalStringValue(object[key]) {
+                return value
+            }
+        }
+
+        return nil
+    }
+
+    private func optionalStringValue(_ value: Any?) -> String? {
+        if let value = value as? String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
 
         return nil
@@ -655,24 +706,76 @@ private struct CodexAuthFile: Decodable {
 private struct CodexAuthTokens: Decodable {
     var accessToken: String?
     var accountId: String?
+    var idToken: String?
 
     private enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case accountId = "account_id"
+        case idToken = "id_token"
+    }
+
+    var loginIdentifier: String? {
+        guard let idToken else { return nil }
+        return JWTClaims.decode(from: idToken)?.loginIdentifier
     }
 }
 
 private struct CodexAuthCredentials {
     var accessToken: String
     var accountId: String?
+    var loginIdentifier: String?
+}
+
+private struct JWTClaims: Decodable {
+    var email: String?
+    var phoneNumber: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case email
+        case phoneNumber = "phone_number"
+    }
+
+    var loginIdentifier: String? {
+        if let email = trimmed(email) {
+            return email
+        }
+
+        return trimmed(phoneNumber)
+    }
+
+    static func decode(from token: String) -> JWTClaims? {
+        let segments = token.split(separator: ".")
+        guard segments.count >= 2,
+              let payloadData = Data(base64URLEncoded: String(segments[1])) else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode(JWTClaims.self, from: payloadData)
+    }
+
+    private func trimmed(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+
+        return value
+    }
 }
 
 private struct CodexUsageAPIResponse: Decodable {
+    var accountIdentifier: String?
     var planType: String?
     var rateLimit: RateLimit?
     var credits: Credits?
 
     private enum CodingKeys: String, CodingKey {
+        case email
+        case userEmail = "user_email"
+        case userEmailCamel = "userEmail"
+        case phoneNumber = "phone_number"
+        case phoneNumberCamel = "phoneNumber"
+        case phone
         case planType = "plan_type"
         case rateLimit = "rate_limit"
         case credits
@@ -680,9 +783,29 @@ private struct CodexUsageAPIResponse: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        accountIdentifier = Self.decodeFirstString(
+            container,
+            keys: [.email, .userEmail, .userEmailCamel, .phoneNumber, .phoneNumberCamel, .phone]
+        )
         planType = try? container.decodeIfPresent(String.self, forKey: .planType)
         rateLimit = try? container.decodeIfPresent(RateLimit.self, forKey: .rateLimit)
         credits = try? container.decodeIfPresent(Credits.self, forKey: .credits)
+    }
+
+    private static func decodeFirstString(
+        _ container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) -> String? {
+        for key in keys {
+            if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            }
+        }
+
+        return nil
     }
 
     struct RateLimit: Decodable {
@@ -772,11 +895,13 @@ private struct CodexUsageAPIResponse: Decodable {
         var hasCredits: Bool?
         var unlimited: Bool
         var balance: Int?
+        var expiresAt: Date?
 
         private enum CodingKeys: String, CodingKey {
             case hasCredits = "has_credits"
             case unlimited
             case balance
+            case expiresAt = "expires_at"
         }
 
         init(from decoder: Decoder) throws {
@@ -792,15 +917,25 @@ private struct CodexUsageAPIResponse: Decodable {
             } else {
                 balance = nil
             }
+            expiresAt = FlexibleDateDecoding.decode(container, forKey: .expiresAt)
         }
     }
 }
 
 private struct CodexRateLimitResetCreditsResponse: Decodable {
     var availableCount: Int
+    var expiresAt: Date?
 
     private enum CodingKeys: String, CodingKey {
         case availableCount = "available_count"
+        case credits
+        case expiresAt = "expires_at"
+        case expiresAtCamel = "expiresAt"
+        case expiration
+        case expirationAt = "expiration_at"
+        case expirationDate = "expiration_date"
+        case validUntil = "valid_until"
+        case validUntilCamel = "validUntil"
     }
 
     init(from decoder: Decoder) throws {
@@ -811,6 +946,95 @@ private struct CodexRateLimitResetCreditsResponse: Decodable {
             availableCount = Int(value) ?? 0
         } else {
             availableCount = 0
+        }
+
+        let credits = (try? container.decodeIfPresent([Credit].self, forKey: .credits)) ?? []
+        expiresAt = Self.decodeFlexibleDate(
+            container,
+            keys: [
+                .expiresAt,
+                .expiresAtCamel,
+                .expiration,
+                .expirationAt,
+                .expirationDate,
+                .validUntil,
+                .validUntilCamel
+            ]
+        ) ?? Self.availableExpiresAt(from: credits)
+    }
+
+    private static func availableExpiresAt(from credits: [Credit]) -> Date? {
+        let availableDates = credits
+            .filter(\.isAvailable)
+            .compactMap(\.expiresAt)
+
+        if let earliestAvailableDate = availableDates.min() {
+            return earliestAvailableDate
+        }
+
+        return credits.compactMap(\.expiresAt).min()
+    }
+
+    private static func decodeFlexibleDate(
+        _ container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) -> Date? {
+        for key in keys {
+            if let date = FlexibleDateDecoding.decode(container, forKey: key) {
+                return date
+            }
+        }
+
+        return nil
+    }
+
+    private struct Credit: Decodable {
+        var status: String?
+        var expiresAt: Date?
+
+        private enum CodingKeys: String, CodingKey {
+            case status
+            case expiresAt = "expires_at"
+            case expiresAtCamel = "expiresAt"
+            case expiration
+            case expirationAt = "expiration_at"
+            case expirationDate = "expiration_date"
+            case validUntil = "valid_until"
+            case validUntilCamel = "validUntil"
+        }
+
+        var isAvailable: Bool {
+            status?.lowercased() == "available"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            status = try? container.decodeIfPresent(String.self, forKey: .status)
+            expiresAt = Self.decodeFlexibleDate(
+                container,
+                keys: [
+                    .expiresAt,
+                    .expiresAtCamel,
+                    .expiration,
+                    .expirationAt,
+                    .expirationDate,
+                    .validUntil,
+                    .validUntilCamel
+                ]
+            )
+        }
+
+        private static func decodeFlexibleDate(
+            _ container: KeyedDecodingContainer<CodingKeys>,
+            keys: [CodingKeys]
+        ) -> Date? {
+            for key in keys {
+                if let date = FlexibleDateDecoding.decode(container, forKey: key) {
+                    return date
+                }
+            }
+
+            return nil
         }
     }
 }
@@ -854,5 +1078,45 @@ private enum DateParsers {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: value)
+    }
+}
+
+private enum FlexibleDateDecoding {
+    static func decode<Key: CodingKey>(
+        _ container: KeyedDecodingContainer<Key>,
+        forKey key: Key
+    ) -> Date? {
+        if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+            return Date(timeIntervalSince1970: value)
+        }
+
+        if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+            return Date(timeIntervalSince1970: TimeInterval(value))
+        }
+
+        if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+            if let seconds = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return Date(timeIntervalSince1970: seconds)
+            }
+
+            return DateParsers.parse(value)
+        }
+
+        return nil
+    }
+}
+
+private extension Data {
+    init?(base64URLEncoded value: String) {
+        var base64 = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+
+        let padding = base64.count % 4
+        if padding > 0 {
+            base64.append(String(repeating: "=", count: 4 - padding))
+        }
+
+        self.init(base64Encoded: base64)
     }
 }

@@ -93,6 +93,7 @@ enum CodexRateWindowKind {
 
 struct CodexUsageSnapshot: Codable, Equatable {
     var capturedAt: Date
+    var accountIdentifier: String?
     var planType: String?
     var limitId: String?
     var primary: RateWindow?
@@ -103,6 +104,7 @@ struct CodexUsageSnapshot: Codable, Equatable {
 
     static let empty = CodexUsageSnapshot(
         capturedAt: Date(),
+        accountIdentifier: nil,
         planType: nil,
         limitId: nil,
         primary: nil,

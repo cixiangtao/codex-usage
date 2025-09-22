@@ -1,6 +1,41 @@
 import Foundation
 
 enum UsageFormatters {
+    static func planName(_ value: String?) -> String {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return "本地快照"
+        }
+
+        let lowercased = value.lowercased()
+        if let displayName = codexPlanDisplayNames[lowercased] {
+            return displayName
+        }
+
+        return value.uppercased()
+    }
+
+    private static let codexPlanDisplayNames: [String: String] = [
+        "pro": "Pro · 20x",
+        "prolite": "Pro · 5x",
+        "pro_lite": "Pro · 5x",
+        "pro-lite": "Pro · 5x",
+        "pro lite": "Pro · 5x",
+    ]
+
+    static func accountIdentifier(_ value: String?) -> String {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return "未识别账号"
+        }
+
+        guard value.count > 22 else {
+            return value
+        }
+
+        return "\(value.prefix(10))...\(value.suffix(8))"
+    }
+
     static func percent(_ value: Double?) -> String {
         guard let value else { return "--%" }
         return "\(Int(value.rounded()))%"

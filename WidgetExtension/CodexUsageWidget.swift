@@ -140,6 +140,7 @@ struct SnapshotStore {
 
 struct CodexUsageSnapshot: Codable, Equatable {
     var capturedAt: Date
+    var accountIdentifier: String?
     var planType: String?
     var limitId: String?
     var primary: RateWindow?
@@ -149,6 +150,7 @@ struct CodexUsageSnapshot: Codable, Equatable {
 
     static let placeholder = CodexUsageSnapshot(
         capturedAt: Date(),
+        accountIdentifier: nil,
         planType: "pro",
         limitId: "codex",
         primary: RateWindow(name: "5h", usedPercent: 35, windowMinutes: 300, resetsAt: Date().addingTimeInterval(3600)),

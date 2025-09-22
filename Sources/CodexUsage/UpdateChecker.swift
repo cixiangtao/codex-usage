@@ -38,7 +38,7 @@ struct UpdateChecker: Sendable {
         let currentVersion = Self.currentVersion
         let latestVersion = release.normalizedVersion
         let releasePageURL = release.webURL ?? UpdateConfiguration.releasePageURL
-        let downloadURL = release.preferredDownloadURL ?? releasePageURL
+        let downloadURL = release.preferredDownloadURL
 
         return UpdateCheckResult(
             currentVersion: currentVersion,

@@ -144,11 +144,17 @@ struct MenuBarContent: View {
                 .background(health.tint.gradient, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Codex 用量")
+                Text(accountTitle)
                     .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
 
-                Text(subtitle)
+                Text(planText)
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text(updateText)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
@@ -174,9 +180,16 @@ struct MenuBarContent: View {
         }
     }
 
-    private var subtitle: String {
-        let plan = viewModel.snapshot.planType?.uppercased() ?? "本地"
-        return "\(plan) · 更新于 \(UsageFormatters.relativeDateString(for: viewModel.snapshot.capturedAt, relativeTo: Date()))前"
+    private var accountTitle: String {
+        UsageFormatters.accountIdentifier(viewModel.snapshot.accountIdentifier)
+    }
+
+    private var planText: String {
+        "套餐 \(UsageFormatters.planName(viewModel.snapshot.planType))"
+    }
+
+    private var updateText: String {
+        "更新于 \(UsageFormatters.relativeDateString(for: viewModel.snapshot.capturedAt, relativeTo: Date()))前"
     }
 
     private var footer: some View {
@@ -714,6 +727,7 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var viewModel: DashboardViewModel
     @StateObject private var updateViewModel = UpdateCheckViewModel()
+    @StateObject private var intelligenceCheckViewModel = CodexIntelligenceCheckViewModel()
     #if DEBUG
     @State private var debugNotificationAlertMessage = ""
     @State private var debugNotificationAlertTitle = ""
@@ -799,6 +813,17 @@ struct SettingsView: View {
                             tint: .red
                         )
                     }
+                }
+
+                SettingsSection(
+                    icon: "brain.head.profile",
+                    title: "降智检测",
+                    subtitle: "手动运行轻量样本，给出当前模型状态结论。"
+                ) {
+                    CodexIntelligenceCheckRows(
+                        viewModel: intelligenceCheckViewModel,
+                        codexHomePath: settings.codexHomePath
+                    )
                 }
 
                 SettingsSection(
@@ -968,10 +993,13 @@ final class UpdateCheckViewModel: ObservableObject {
     @Published private(set) var result: UpdateCheckResult?
     @Published private(set) var errorMessage: String?
     @Published private(set) var isChecking = false
+    @Published private(set) var isInstalling = false
+    @Published private(set) var installMessage: String?
 
     let currentVersion = UpdateChecker.currentVersion
 
     private let checker = UpdateChecker()
+    private let installer = UpdateInstaller()
 
     func checkIfNeeded() async {
         guard result == nil, errorMessage == nil else { return }
@@ -979,10 +1007,11 @@ final class UpdateCheckViewModel: ObservableObject {
     }
 
     func check() async {
-        guard !isChecking else { return }
+        guard !isChecking, !isInstalling else { return }
 
         isChecking = true
         errorMessage = nil
+        installMessage = nil
 
         do {
             result = try await checker.checkForUpdates()
@@ -996,6 +1025,30 @@ final class UpdateCheckViewModel: ObservableObject {
     func openDownload() {
         guard let url = result?.downloadURL ?? result?.releasePageURL else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    func installUpdateAndRelaunch() async {
+        guard !isChecking, !isInstalling else { return }
+        guard let result, result.isUpdateAvailable else { return }
+        guard let downloadURL = result.downloadURL else {
+            errorMessage = UpdateInstallError.missingDownloadURL.localizedDescription
+            return
+        }
+
+        isInstalling = true
+        errorMessage = nil
+        installMessage = "正在下载更新"
+
+        do {
+            let plan = try await installer.prepareInstall(from: downloadURL)
+            installMessage = "正在重启应用"
+            try installer.installAndRelaunch(plan)
+            NSApplication.shared.terminate(nil)
+        } catch {
+            installMessage = nil
+            errorMessage = error.localizedDescription
+            isInstalling = false
+        }
     }
 }
 
@@ -1040,17 +1093,40 @@ struct UpdateCheckRows: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(viewModel.isChecking)
+                .disabled(viewModel.isChecking || viewModel.isInstalling)
 
-                if viewModel.result != nil {
+                if let result = viewModel.result,
+                   result.isUpdateAvailable,
+                   result.downloadURL != nil,
+                   UpdateInstaller.canInstallCurrentApplication {
+                    Button {
+                        Task {
+                            await viewModel.installUpdateAndRelaunch()
+                        }
+                    } label: {
+                        Label {
+                            Text(viewModel.isInstalling ? "安装中" : "下载并安装")
+                        } icon: {
+                            if viewModel.isInstalling {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.down.app")
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(viewModel.isChecking || viewModel.isInstalling)
+                } else if viewModel.result != nil {
                     Button {
                         viewModel.openDownload()
                     } label: {
                         Label(downloadButtonTitle, systemImage: "safari")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(viewModel.isChecking)
+                    .disabled(viewModel.isChecking || viewModel.isInstalling)
                 }
 
                 Spacer()
@@ -1060,7 +1136,7 @@ struct UpdateCheckRows: View {
 
     @ViewBuilder
     private var updateBadge: some View {
-        if viewModel.isChecking {
+        if viewModel.isChecking || viewModel.isInstalling {
             ProgressView()
                 .controlSize(.small)
         } else if let result = viewModel.result {
@@ -1088,6 +1164,10 @@ struct UpdateCheckRows: View {
     }
 
     private var statusTitle: String {
+        if viewModel.isInstalling {
+            return "正在安装更新"
+        }
+
         if viewModel.isChecking {
             return "正在检查更新"
         }
@@ -1104,6 +1184,10 @@ struct UpdateCheckRows: View {
     }
 
     private var statusSubtitle: String {
+        if let installMessage = viewModel.installMessage {
+            return installMessage
+        }
+
         if let errorMessage = viewModel.errorMessage {
             return errorMessage
         }
@@ -1113,7 +1197,15 @@ struct UpdateCheckRows: View {
         }
 
         if result.isUpdateAvailable {
-            return "当前 \(result.currentVersion)，最新 \(result.releaseName)。"
+            if result.downloadURL == nil {
+                return "当前 \(result.currentVersion)，最新 \(result.releaseName)，但没有找到 zip 安装包。"
+            }
+
+            if !UpdateInstaller.canInstallCurrentApplication {
+                return "当前 \(result.currentVersion)，最新 \(result.releaseName)。自动安装需要 release 版 .app。"
+            }
+
+            return "当前 \(result.currentVersion)，最新 \(result.releaseName)，可自动下载并重启。"
         }
 
         return "当前 \(result.currentVersion)，GitLab 最新 \(result.latestVersion)。"
