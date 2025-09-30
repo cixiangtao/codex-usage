@@ -16,7 +16,7 @@ build_macos:
   script:
     - bun install --frozen-lockfile
     - VERSION="${CI_COMMIT_TAG#v}" BUILD_NUMBER="${CI_PIPELINE_IID}" bun run package:app
-    - ditto -c -k --keepParent "dist/${APP_NAME}.app" "dist/${APP_NAME}-${CI_COMMIT_TAG}.zip"
+    - ditto -c -k --keepParent --norsrc --noextattr "dist/${APP_NAME}.app" "dist/${APP_NAME}-${CI_COMMIT_TAG}.zip"
   artifacts:
     paths:
       - "dist/${APP_NAME}-${CI_COMMIT_TAG}.zip"

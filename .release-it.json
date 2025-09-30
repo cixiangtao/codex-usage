@@ -2,7 +2,7 @@
   "$schema": "https://unpkg.com/release-it@20/schema/release-it.json",
   "hooks": {
     "before:init": "bun run typecheck",
-    "before:bump": "VERSION=${version} BUILD_NUMBER=$(date +%Y%m%d%H%M%S) OUTPUT_DIR=dist bun run package:app && ditto -c -k --keepParent dist/CodexUsage.app dist/CodexUsage-v${version}.zip",
+    "before:bump": "VERSION=${version} BUILD_NUMBER=$(date +%Y%m%d%H%M%S) OUTPUT_DIR=dist bun run package:app && ditto -c -k --keepParent --norsrc --noextattr dist/CodexUsage.app dist/CodexUsage-v${version}.zip",
     "after:bump": "bun install --lockfile-only"
   },
   "git": {

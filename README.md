@@ -54,6 +54,32 @@ bun run package:app
 BUNDLE_IDENTIFIER=com.example.CodexUsage OUTPUT_DIR=/tmp bun run package:app
 ```
 
+默认构建会使用 ad-hoc 签名，适合本机调试，但从浏览器或 GitLab 下载后的 zip 会被 macOS 加上隔离标记，Gatekeeper 仍可能提示“Apple 无法验证 CodexUsage 是否包含恶意软件”。本机自用时可以在安装到 `/Applications` 后移除隔离标记：
+
+```sh
+xattr -dr com.apple.quarantine /Applications/CodexUsage.app
+open /Applications/CodexUsage.app
+```
+
+要生成下载后可正常打开的发布包，需要使用 Apple Developer ID 证书签名并公证。先把 notarytool 凭据存到钥匙串：
+
+```sh
+xcrun notarytool store-credentials codex-usage-notary \
+  --apple-id you@example.com \
+  --team-id TEAMID12345 \
+  --password app-specific-password
+```
+
+然后用 Developer ID 身份打包：
+
+```sh
+APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID12345)" \
+APPLE_NOTARY_KEYCHAIN_PROFILE=codex-usage-notary \
+bun run package:app
+```
+
+脚本会在签名前清理常见 bundle 扩展属性，使用 hardened runtime 签名，提交 Apple 公证，staple 公证票据，并执行 Gatekeeper 校验。CI 或本地发布生成 zip 时会禁用资源叉和扩展属性，避免把本机 quarantine/provenance 元数据写进发布包。
+
 发布版本时建议同时写入 app 版本号和构建号：
 
 ```sh

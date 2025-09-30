@@ -10,6 +10,12 @@ const version = process.env.VERSION ?? "1.0.0";
 const buildNumber = process.env.BUILD_NUMBER ?? "1";
 const outputDir = process.env.OUTPUT_DIR ?? resolve(rootDir, "dist");
 const appPath = resolve(outputDir, `${appName}.app`);
+const signingIdentity = process.env.APPLE_SIGNING_IDENTITY?.trim() || "-";
+const notaryKeychainProfile = process.env.APPLE_NOTARY_KEYCHAIN_PROFILE?.trim();
+const notaryAppleId = process.env.APPLE_NOTARY_APPLE_ID?.trim();
+const notaryTeamId = process.env.APPLE_NOTARY_TEAM_ID?.trim();
+const notaryPassword = process.env.APPLE_NOTARY_PASSWORD?.trim();
+const skipNotarization = ["1", "true", "yes"].includes((process.env.SKIP_NOTARIZATION ?? "").toLowerCase());
 
 const printUsage = () => {
   console.log(`Usage: bun run package:app
@@ -19,7 +25,14 @@ Environment:
   BUNDLE_IDENTIFIER   Bundle identifier. Default: ${bundleIdentifier}
   VERSION             CFBundleShortVersionString. Default: ${version}
   BUILD_NUMBER        CFBundleVersion. Default: ${buildNumber}
-  OUTPUT_DIR          Output directory. Default: ${outputDir}`);
+  OUTPUT_DIR          Output directory. Default: ${outputDir}
+  APPLE_SIGNING_IDENTITY
+                      Developer ID identity for distributed builds. Default: ad-hoc signing
+  APPLE_NOTARY_KEYCHAIN_PROFILE
+                      notarytool keychain profile. Preferred for notarization
+  APPLE_NOTARY_APPLE_ID / APPLE_NOTARY_TEAM_ID / APPLE_NOTARY_PASSWORD
+                      notarytool credentials used when no keychain profile is provided
+  SKIP_NOTARIZATION   Set to 1 to skip notarization for Developer ID builds`);
 };
 
 const fail = (message: string): never => {
@@ -85,6 +98,18 @@ const pathExists = async (path: string) => {
   }
 };
 
+const notaryAuthArguments = () => {
+  if (notaryKeychainProfile) {
+    return ["--keychain-profile", notaryKeychainProfile];
+  }
+
+  if (notaryAppleId && notaryTeamId && notaryPassword) {
+    return ["--apple-id", notaryAppleId, "--team-id", notaryTeamId, "--password", notaryPassword];
+  }
+
+  return [];
+};
+
 const assertExecutable = async (path: string) => {
   try {
     await access(path, fsConstants.X_OK);
@@ -135,6 +160,45 @@ const infoPlist = () => `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `;
 
+const signApp = async () => {
+  await run("xattr", ["-cr", appPath]);
+
+  const args = ["--force", "--deep", "--sign", signingIdentity];
+  if (signingIdentity !== "-") {
+    args.push("--options", "runtime", "--timestamp");
+  }
+
+  await run("codesign", [...args, appPath]);
+  await run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath]);
+};
+
+const notarizeApp = async () => {
+  const authArgs = notaryAuthArguments();
+  if (signingIdentity === "-") {
+    console.warn("[package] Using ad-hoc signing. Downloaded builds will not pass Gatekeeper notarization.");
+    return;
+  }
+
+  if (skipNotarization) {
+    console.warn("[package] Skipped notarization. Downloaded Developer ID builds may still be blocked by Gatekeeper.");
+    return;
+  }
+
+  if (authArgs.length === 0) {
+    console.warn("[package] Missing notarytool credentials. Set APPLE_NOTARY_KEYCHAIN_PROFILE or APPLE_NOTARY_APPLE_ID / APPLE_NOTARY_TEAM_ID / APPLE_NOTARY_PASSWORD.");
+    console.warn("[package] Downloaded Developer ID builds may still be blocked by Gatekeeper.");
+    return;
+  }
+
+  const archivePath = resolve(outputDir, `${appName}-notary.zip`);
+  await rm(archivePath, { force: true });
+  await run("ditto", ["-c", "-k", "--keepParent", "--norsrc", "--noextattr", appPath, archivePath]);
+  await run("xcrun", ["notarytool", "submit", archivePath, "--wait", ...authArgs]);
+  await rm(archivePath, { force: true });
+  await run("xcrun", ["stapler", "staple", appPath]);
+  await run("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath]);
+};
+
 const packageApp = async () => {
   const [firstArg] = process.argv.slice(2);
   if (firstArg === "-h" || firstArg === "--help") {
@@ -168,7 +232,8 @@ const packageApp = async () => {
   }
 
   await writeFile(resolve(appPath, "Contents", "Info.plist"), infoPlist());
-  await run("codesign", ["--force", "--sign", "-", appPath]);
+  await signApp();
+  await notarizeApp();
 
   console.log(`[package] Created ${appPath}`);
 };
