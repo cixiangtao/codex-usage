@@ -401,15 +401,15 @@ struct ResetCardSummaryView: View {
 
     private var expirationText: String {
         guard let expiresAt = info?.expiresAt else {
-            return "过期时间未提供"
+            return "最近过期时间未提供"
         }
 
         let now = Date()
         if expiresAt <= now {
-            return "已过期 · \(UsageFormatters.fullDateTime(expiresAt))"
+            return "最近一张已过期 · \(UsageFormatters.fullDateTime(expiresAt))"
         }
 
-        return "\(UsageFormatters.relativeDateString(for: expiresAt, relativeTo: now))后过期 · \(UsageFormatters.fullDateTime(expiresAt))"
+        return "最近过期 \(UsageFormatters.relativeDateString(for: expiresAt, relativeTo: now))后 · \(UsageFormatters.fullDateTime(expiresAt))"
     }
 
     private var tint: Color {
