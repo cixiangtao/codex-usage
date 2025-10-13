@@ -37,7 +37,7 @@ struct UpdateChecker: Sendable {
         let release = try decoder.decode(GitLabRelease.self, from: data)
         let currentVersion = Self.currentVersion
         let latestVersion = release.normalizedVersion
-        let releasePageURL = release.webURL ?? UpdateConfiguration.releasePageURL
+        let releasePageURL = UpdateConfiguration.releasePageURL
         let downloadURL = release.preferredDownloadURL
 
         return UpdateCheckResult(
@@ -103,7 +103,6 @@ private enum UpdateConfiguration {
 private struct GitLabRelease: Decodable, Equatable, Sendable {
     var tagName: String
     var name: String?
-    var webURL: URL?
     var assets: GitLabReleaseAssets?
 
     var normalizedVersion: String {
@@ -127,7 +126,6 @@ private struct GitLabRelease: Decodable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case tagName = "tag_name"
         case name
-        case webURL = "web_url"
         case assets
     }
 }

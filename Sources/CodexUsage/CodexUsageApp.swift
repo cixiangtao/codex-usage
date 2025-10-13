@@ -1023,8 +1023,8 @@ final class UpdateCheckViewModel: ObservableObject {
     }
 
     func openDownload() {
-        guard let url = result?.downloadURL ?? result?.releasePageURL else { return }
-        NSWorkspace.shared.open(url)
+        guard let result else { return }
+        NSWorkspace.shared.open(result.releasePageURL)
     }
 
     func installUpdateAndRelaunch() async {
@@ -1212,8 +1212,7 @@ struct UpdateCheckRows: View {
     }
 
     private var downloadButtonTitle: String {
-        guard let result = viewModel.result else { return "打开发布页" }
-        return result.isUpdateAvailable ? "下载更新" : "打开发布页"
+        "打开发布页"
     }
 }
 
