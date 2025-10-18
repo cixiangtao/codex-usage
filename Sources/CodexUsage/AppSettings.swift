@@ -117,7 +117,7 @@ final class AppSettings: ObservableObject {
                 codexHomePath: FileManager.default.homeDirectoryForCurrentUser
                     .appendingPathComponent(".codex")
                     .path,
-                refreshIntervalSeconds: 15,
+                refreshIntervalSeconds: 60,
                 warningThresholdPercent: 25,
                 criticalThresholdPercent: 10,
                 notificationsEnabled: true,
