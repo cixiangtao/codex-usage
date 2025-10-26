@@ -228,9 +228,7 @@ final class SettingsWindowPresenter {
 
     func show(settings: AppSettings, viewModel: DashboardViewModel) {
         if let window {
-            NSApp.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
-            window.orderFrontRegardless()
+            show(window, floatsAboveOtherApps: false)
             return
         }
 
@@ -244,14 +242,24 @@ final class SettingsWindowPresenter {
         nextWindow.title = "设置"
         nextWindow.styleMask = [.titled, .closable, .miniaturizable]
         nextWindow.isReleasedWhenClosed = false
-        nextWindow.level = .floating
         nextWindow.collectionBehavior = [.moveToActiveSpace]
         nextWindow.center()
 
         window = nextWindow
+        show(nextWindow, floatsAboveOtherApps: true)
+    }
+
+    private func show(_ window: NSWindow, floatsAboveOtherApps: Bool) {
         NSApp.activate(ignoringOtherApps: true)
-        nextWindow.makeKeyAndOrderFront(nil)
-        nextWindow.orderFrontRegardless()
+        window.level = floatsAboveOtherApps ? .floating : .normal
+        window.makeKeyAndOrderFront(nil)
+
+        guard floatsAboveOtherApps else { return }
+
+        window.orderFrontRegardless()
+        DispatchQueue.main.async { [weak window] in
+            window?.level = .normal
+        }
     }
 }
 
