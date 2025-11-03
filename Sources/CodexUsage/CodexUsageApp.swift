@@ -1126,7 +1126,9 @@ struct UpdateCheckRows: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .disabled(viewModel.isChecking || viewModel.isInstalling)
-                } else if viewModel.result != nil {
+                }
+                /*
+                else if viewModel.result != nil {
                     Button {
                         viewModel.openDownload()
                     } label: {
@@ -1136,6 +1138,7 @@ struct UpdateCheckRows: View {
                     .controlSize(.small)
                     .disabled(viewModel.isChecking || viewModel.isInstalling)
                 }
+                */
 
                 Spacer()
             }
