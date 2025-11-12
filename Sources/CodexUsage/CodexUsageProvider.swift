@@ -154,11 +154,22 @@ struct CodexUsageProvider: UsageProvider {
     }
 
     private func fetchLocalTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint] {
-        let sessionsURL = URL(fileURLWithPath: codexHomePath)
-            .appendingPathComponent("sessions", isDirectory: true)
+        let sessionRoots = codexSessionRoots(codexHomePath: codexHomePath)
+        guard !sessionRoots.isEmpty else {
+            return []
+        }
 
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: sessionsURL.path) else {
+        let accountScope = currentLocalAccountScope(codexHomePath: codexHomePath)
+        let jsonlTrend = try fetchJSONLTrendPoints(
+            sessionRoots: sessionRoots,
+            accountScope: accountScope,
+            relativeTo: date
+        )
+        if !jsonlTrend.points.isEmpty {
+            return jsonlTrend.points
+        }
+
+        if accountScope != nil, jsonlTrend.sawTokenEvents {
             return []
         }
 
@@ -166,15 +177,45 @@ struct CodexUsageProvider: UsageProvider {
             return threadTrendPoints
         }
 
-        let files = try recentJSONLFiles(in: sessionsURL)
+        return []
+    }
+
+    private func codexSessionRoots(codexHomePath: String) -> [URL] {
+        let codexHomeURL = URL(fileURLWithPath: codexHomePath)
+        let fileManager = FileManager.default
+
+        return [
+            codexHomeURL.appendingPathComponent("sessions", isDirectory: true),
+            codexHomeURL.appendingPathComponent("archived_sessions", isDirectory: true)
+        ].filter { url in
+            var isDirectory: ObjCBool = false
+            return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+    }
+
+    private func fetchJSONLTrendPoints(
+        sessionRoots: [URL],
+        accountScope: LocalAccountScope?,
+        relativeTo date: Date
+    ) throws -> JSONLTrendResult {
+        let files = try sessionRoots.flatMap { try recentJSONLFiles(in: $0) }
         let cutoffDate = trendCutoffDate(relativeTo: date)
         var events: [ParsedTokenEvent] = []
+        var sawTokenEvents = false
         for file in files where file.modifiedAt >= cutoffDate {
-            events.append(contentsOf: try tokenEvents(in: file.url, mode: .fullFile))
+            let generalEvents = try tokenEvents(in: file.url, mode: .fullFile)
+                .filter { isGeneralUsageLimit($0.snapshot) }
+            if !generalEvents.isEmpty {
+                sawTokenEvents = true
+            }
+            events.append(contentsOf: generalEvents.filter { isInCurrentLocalAccountScope($0.snapshot, scope: accountScope) })
         }
 
         let sortedEvents = events.sorted { $0.timestamp < $1.timestamp }
-        return dailyTrendPoints(from: sortedEvents, cutoffDate: cutoffDate)
+        return JSONLTrendResult(
+            points: dailyTrendPoints(from: sortedEvents, cutoffDate: cutoffDate),
+            sawTokenEvents: sawTokenEvents
+        )
     }
 
     private func fetchThreadTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint]? {
@@ -475,6 +516,47 @@ struct CodexUsageProvider: UsageProvider {
         snapshot.limitId == generalUsageLimitId
     }
 
+    private func currentLocalAccountScope(codexHomePath: String) -> LocalAccountScope? {
+        guard let credentials = try? loadAuthCredentials(codexHomePath: codexHomePath) else {
+            return nil
+        }
+
+        let identifiers = [
+            credentials.accountId,
+            credentials.loginIdentifier
+        ].compactMap(normalizedAccountIdentifier)
+
+        guard !identifiers.isEmpty else {
+            return nil
+        }
+
+        return LocalAccountScope(identifiers: Set(identifiers))
+    }
+
+    private func isInCurrentLocalAccountScope(_ snapshot: CodexUsageSnapshot, scope: LocalAccountScope?) -> Bool {
+        guard let scope else {
+            return true
+        }
+
+        if let accountIdentifier = normalizedAccountIdentifier(snapshot.accountIdentifier) {
+            return scope.identifiers.contains(accountIdentifier)
+        }
+
+        return hasQuotaContext(snapshot)
+    }
+
+    private func hasQuotaContext(_ snapshot: CodexUsageSnapshot) -> Bool {
+        snapshot.planType != nil || snapshot.primary != nil || snapshot.secondary != nil || snapshot.resetCards != nil
+    }
+
+    private func normalizedAccountIdentifier(_ value: String?) -> String? {
+        guard let value = optionalStringValue(value) else {
+            return nil
+        }
+
+        return value.lowercased()
+    }
+
     private func dailyTrendPoints(from events: [ParsedTokenEvent], cutoffDate: Date) -> [UsageTrendPoint] {
         let calendar = Calendar.current
         var totalsByDay: [Date: Int] = [:]
@@ -697,6 +779,15 @@ private struct ParsedTokenEvent {
     var timestamp: Date
     var tokenDelta: Int
     var snapshot: CodexUsageSnapshot
+}
+
+private struct JSONLTrendResult {
+    var points: [UsageTrendPoint]
+    var sawTokenEvents: Bool
+}
+
+private struct LocalAccountScope {
+    var identifiers: Set<String>
 }
 
 private struct CodexAuthFile: Decodable {

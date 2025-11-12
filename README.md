@@ -7,7 +7,7 @@
 - 状态栏显示 Codex 剩余额度。
 - 状态栏默认同时显示 `5h` 和 `7d` 剩余额度，使用 `5h 86% · 7d 88%` 这类紧凑格式；也可在设置中勾选要展示的窗口，并控制是否展示窗口标签。
 - 展开面板查看 `5h` / `7d` 额度窗口。
-- 优先通过 Codex OAuth 凭据读取服务端用量窗口，失败时回退解析本地 `~/.codex/sessions/**/*.jsonl` 中的 token-count 事件。
+- 优先通过 Codex OAuth 凭据读取服务端用量窗口，失败时回退解析本地 `~/.codex/sessions/**/*.jsonl` 和 `~/.codex/archived_sessions/**/*.jsonl` 中的 token-count 事件。
 - 支持低剩余额度通知阈值。
 - 保存共享快照，供 WidgetKit 小组件读取。
 - `WidgetExtension/` 中提供小组件源码骨架。
@@ -16,7 +16,7 @@
 
 应用会优先读取 `~/.codex/auth.json` 中 Codex CLI 已保存的 OAuth access token，并直接请求 `chatgpt.com` 的 Codex 用量接口获取 5h / 7d 用量窗口和重置卡信息。它不会读取、保存或上传密码，也不会把 token 写入应用自己的配置。
 
-如果 OAuth 凭据不存在、过期或接口不可用，应用会回退读取 Codex 已经写入本地会话日志的结构化 `rate_limits` 快照。每日 token 趋势同样会先尝试接口数据；如果接口没有提供可用的每日 token 明细，再读取 `~/.codex/state_5.sqlite` 中的线程级 `tokens_used` 汇总；如果该数据库不可用，最后回退解析 `~/.codex/sessions/**/*.jsonl` 的 token-count 事件。由于个人资料页统计来自服务端口径，本地趋势仍可能有轻微差异。
+如果 OAuth 凭据不存在、过期或接口不可用，应用会回退读取 Codex 已经写入本地会话日志的结构化 `rate_limits` 快照。每日 token 趋势同样会先尝试接口数据；如果接口没有提供可用的每日 token 明细，再按本地 `sessions` / `archived_sessions` JSONL 的 token-count 事件时间聚合通用 Codex 用量，并尽量限定为当前登录账号：日志里有账号标识时要求匹配当前账号；没有账号标识时，只保留带额度窗口或 plan 信息的当前账号上下文事件。如果本地事件不可用，最后回退读取 `~/.codex/state_5.sqlite` 中的线程级 `tokens_used` 汇总。由于 Codex app / 个人资料页统计来自服务端口径，本地趋势仍可能和服务端日统计不完全一致。
 
 ## 本地运行
 

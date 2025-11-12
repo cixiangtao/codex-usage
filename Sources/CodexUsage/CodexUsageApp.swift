@@ -443,12 +443,12 @@ struct TokenSummaryView: View {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
                 GridRow {
                     tokenCell(todayLabel, todayTotal, icon: "calendar")
-                    tokenCell("近 7 天", total(forLastDays: 7), icon: "chart.bar")
+                    tokenCell("近 7 天估算", total(forLastDays: 7), icon: "chart.bar")
                 }
 
                 GridRow {
-                    tokenCell("近 30 天", total(forLastDays: 30), icon: "sum")
-                    tokenCell("日均", dailyAverage, icon: "divide")
+                    tokenCell("近 30 天估算", total(forLastDays: 30), icon: "sum")
+                    tokenCell("日均估算", dailyAverage, icon: "divide")
                 }
             }
         }
