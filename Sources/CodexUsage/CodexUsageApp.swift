@@ -824,6 +824,14 @@ struct SettingsView: View {
                 }
 
                 SettingsSection(
+                    icon: "power.circle",
+                    title: "系统",
+                    subtitle: "管理 CodexUsage 是否随 macOS 登录自动启动。"
+                ) {
+                    LoginItemRows()
+                }
+
+                SettingsSection(
                     icon: "brain.head.profile",
                     title: "降智检测",
                     subtitle: "手动运行轻量样本，给出当前模型状态结论。"
@@ -994,6 +1002,59 @@ struct SettingsView: View {
         return .normal
     }
     #endif
+}
+
+struct LoginItemRows: View {
+    @StateObject private var controller = LoginItemController()
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ToggleRow(
+                title: "开机自启",
+                subtitle: controller.statusText,
+                isOn: Binding {
+                    controller.isEnabled
+                } set: { isOn in
+                    controller.setEnabled(isOn)
+                },
+                isDisabled: controller.isBusy || !controller.canManageLoginItem
+            )
+
+            if let errorMessage = controller.errorMessage {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+            }
+
+            if controller.shouldOfferSystemSettings {
+                HStack {
+                    Spacer()
+
+                    Button {
+                        controller.openLoginItemsSettings()
+                    } label: {
+                        Label("打开登录项", systemImage: "gear")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+        .task {
+            controller.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            controller.refresh()
+        }
+    }
 }
 
 @MainActor
@@ -1269,6 +1330,7 @@ struct ToggleRow: View {
     var title: String
     var subtitle: String
     @Binding var isOn: Bool
+    var isDisabled = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -1284,9 +1346,11 @@ struct ToggleRow: View {
             Spacer()
 
             SwitchControl(isOn: $isOn)
+                .disabled(isDisabled)
         }
         .padding(10)
         .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .opacity(isDisabled ? 0.62 : 1)
     }
 }
 
