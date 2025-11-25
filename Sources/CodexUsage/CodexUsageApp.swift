@@ -5,6 +5,7 @@ import SwiftUI
 struct CodexUsageApp: App {
     @StateObject private var settings = AppSettings()
     @StateObject private var viewModel = DashboardViewModel()
+    @StateObject private var updateViewModel = UpdateCheckViewModel()
 
     init() {
         AppIcon.installApplicationIcon()
@@ -12,7 +13,7 @@ struct CodexUsageApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarContent(viewModel: viewModel, settings: settings)
+            MenuBarContent(viewModel: viewModel, settings: settings, updateViewModel: updateViewModel)
                 .frame(width: 360)
         } label: {
             StatusBarLabel(
@@ -101,6 +102,7 @@ struct StatusBarLabel: View {
 struct MenuBarContent: View {
     @ObservedObject var viewModel: DashboardViewModel
     @ObservedObject var settings: AppSettings
+    @ObservedObject var updateViewModel: UpdateCheckViewModel
 
     private var health: UsageHealth {
         UsageHealth.evaluate(
@@ -133,6 +135,9 @@ struct MenuBarContent: View {
         }
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))
+        .task {
+            await updateViewModel.checkIfNeeded()
+        }
     }
 
     private var header: some View {
@@ -195,12 +200,40 @@ struct MenuBarContent: View {
     private var footer: some View {
         HStack(spacing: 8) {
             Button {
-                SettingsWindowPresenter.shared.show(settings: settings, viewModel: viewModel)
+                SettingsWindowPresenter.shared.show(
+                    settings: settings,
+                    viewModel: viewModel,
+                    updateViewModel: updateViewModel
+                )
             } label: {
                 Label("设置", systemImage: "slider.horizontal.3")
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+
+            if updateViewModel.isUpdateAvailable {
+                Button {
+                    Task {
+                        await updateViewModel.performPrimaryUpdateAction()
+                    }
+                } label: {
+                    Label {
+                        Text(updateViewModel.primaryUpdateActionTitle)
+                    } icon: {
+                        if updateViewModel.isInstalling {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.down.app")
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(.orange)
+                .disabled(updateViewModel.isChecking || updateViewModel.isInstalling)
+                .help(updateViewModel.primaryUpdateActionHelp)
+            }
 
             Spacer()
 
@@ -226,14 +259,14 @@ final class SettingsWindowPresenter {
 
     private init() {}
 
-    func show(settings: AppSettings, viewModel: DashboardViewModel) {
+    func show(settings: AppSettings, viewModel: DashboardViewModel, updateViewModel: UpdateCheckViewModel) {
         if let window {
             show(window, floatsAboveOtherApps: false)
             return
         }
 
         let hostingController = NSHostingController(
-            rootView: SettingsView(settings: settings, viewModel: viewModel)
+            rootView: SettingsView(settings: settings, viewModel: viewModel, updateViewModel: updateViewModel)
                 .frame(width: Self.contentSize.width, height: Self.contentSize.height)
         )
 
@@ -734,7 +767,7 @@ private extension UsageHealth {
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var viewModel: DashboardViewModel
-    @StateObject private var updateViewModel = UpdateCheckViewModel()
+    @ObservedObject var updateViewModel: UpdateCheckViewModel
     @StateObject private var intelligenceCheckViewModel = CodexIntelligenceCheckViewModel()
     #if DEBUG
     @State private var debugNotificationAlertMessage = ""
@@ -1070,6 +1103,27 @@ final class UpdateCheckViewModel: ObservableObject {
     private let checker = UpdateChecker()
     private let installer = UpdateInstaller()
 
+    var isUpdateAvailable: Bool {
+        result?.isUpdateAvailable == true
+    }
+
+    var canInstallAvailableUpdate: Bool {
+        guard let result, result.isUpdateAvailable else { return false }
+        return result.downloadURL != nil && UpdateInstaller.canInstallCurrentApplication
+    }
+
+    var primaryUpdateActionTitle: String {
+        if isInstalling {
+            return "安装中"
+        }
+
+        return canInstallAvailableUpdate ? "下载并更新" : "打开发布页"
+    }
+
+    var primaryUpdateActionHelp: String {
+        canInstallAvailableUpdate ? "下载并更新到新版本" : "当前环境无法自动安装，打开发布页"
+    }
+
     func checkIfNeeded() async {
         guard result == nil, errorMessage == nil else { return }
         await check()
@@ -1094,6 +1148,16 @@ final class UpdateCheckViewModel: ObservableObject {
     func openDownload() {
         guard let result else { return }
         NSWorkspace.shared.open(result.releasePageURL)
+    }
+
+    func performPrimaryUpdateAction() async {
+        guard let result, result.isUpdateAvailable else { return }
+
+        if canInstallAvailableUpdate {
+            await installUpdateAndRelaunch()
+        } else {
+            openDownload()
+        }
     }
 
     func installUpdateAndRelaunch() async {
@@ -1174,7 +1238,7 @@ struct UpdateCheckRows: View {
                         }
                     } label: {
                         Label {
-                            Text(viewModel.isInstalling ? "安装中" : "下载并安装")
+                            Text(viewModel.isInstalling ? "安装中" : "下载并更新")
                         } icon: {
                             if viewModel.isInstalling {
                                 ProgressView()
@@ -1186,6 +1250,7 @@ struct UpdateCheckRows: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .tint(.orange)
                     .disabled(viewModel.isChecking || viewModel.isInstalling)
                 }
                 /*
