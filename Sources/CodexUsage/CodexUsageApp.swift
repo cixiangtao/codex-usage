@@ -920,7 +920,7 @@ struct SettingsView: View {
         .task {
             await updateViewModel.checkIfNeeded()
         }
-        .alert("重置所有设置？", isPresented: $isResetConfirmationPresented) {
+        .alert("重置偏好设置？", isPresented: $isResetConfirmationPresented) {
             Button("取消", role: .cancel) {}
             Button("重置", role: .destructive) {
                 withAnimation(.easeInOut(duration: 0.18)) {
