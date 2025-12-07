@@ -57,17 +57,54 @@ final class NotificationManager {
         notificationsEnabled: Bool
     ) async {
         guard isRunningFromAppBundle,
-              notificationsEnabled,
-              health == .warning || health == .critical else {
+              notificationsEnabled else {
             return
         }
 
-        guard let constrainedWindow = snapshot.mostConstrainedWindow else {
+        let previousHealth = defaults.string(forKey: Keys.lastUsageHealth)
+            .flatMap(UsageHealth.init(rawValue:))
+        defaults.set(health.rawValue, forKey: Keys.lastUsageHealth)
+        defaults.removeObject(forKey: Keys.lastRefreshFailureKey)
+
+        if health == .warning || health == .critical,
+           let constrainedWindow = snapshot.mostConstrainedWindow {
+            await notifyLowQuotaIfNeeded(window: constrainedWindow, health: health)
+        } else if health == .normal,
+                  previousHealth == .warning || previousHealth == .critical,
+                  let recoveredWindow = snapshot.mostConstrainedWindow {
+            await notifyQuotaRecoveredIfNeeded(window: recoveredWindow)
+        }
+
+        await notifyResetCardExpiryIfNeeded(info: snapshot.resetCards)
+    }
+
+    func notifyRefreshFailureIfNeeded(error: Error, notificationsEnabled: Bool) async {
+        guard isRunningFromAppBundle,
+              notificationsEnabled else {
             return
         }
 
-        let remaining = constrainedWindow.remainingPercent
-        let resetKey = Int(constrainedWindow.resetsAt?.timeIntervalSince1970 ?? 0)
+        let message = error.localizedDescription
+        let dedupeKey = "refresh-failure-\(message)"
+        guard defaults.string(forKey: Keys.lastRefreshFailureKey) != dedupeKey else {
+            return
+        }
+
+        do {
+            try await deliver(
+                identifier: "codex-usage-\(dedupeKey)",
+                title: "Codex 用量刷新失败",
+                body: "\(message)。已保留上一次快照。"
+            )
+            defaults.set(dedupeKey, forKey: Keys.lastRefreshFailureKey)
+        } catch {
+            // Keep refresh healthy even if notification delivery fails.
+        }
+    }
+
+    private func notifyLowQuotaIfNeeded(window: RateWindow, health: UsageHealth) async {
+        let remaining = window.remainingPercent
+        let resetKey = Int(window.resetsAt?.timeIntervalSince1970 ?? 0)
         let dedupeKey = "\(health.rawValue)-\(resetKey)-\(Int(remaining.rounded()))"
 
         guard defaults.string(forKey: Keys.lastNotificationKey) != dedupeKey else {
@@ -78,9 +115,59 @@ final class NotificationManager {
             try await deliver(
                 identifier: "codex-usage-\(dedupeKey)",
                 title: notificationTitle(health: health),
-                body: notificationBody(window: constrainedWindow)
+                body: notificationBody(window: window)
             )
             defaults.set(dedupeKey, forKey: Keys.lastNotificationKey)
+        } catch {
+            // Keep refresh healthy even if notification delivery fails.
+        }
+    }
+
+    private func notifyQuotaRecoveredIfNeeded(window: RateWindow) async {
+        let resetKey = Int(window.resetsAt?.timeIntervalSince1970 ?? 0)
+        let dedupeKey = "recovered-\(resetKey)-\(Int(window.remainingPercent.rounded()))"
+
+        guard defaults.string(forKey: Keys.lastRecoveryNotificationKey) != dedupeKey else {
+            return
+        }
+
+        do {
+            try await deliver(
+                identifier: "codex-usage-\(dedupeKey)",
+                title: "Codex 额度已恢复",
+                body: "\(window.displayName) 当前剩余 \(UsageFormatters.percent(window.remainingPercent))。"
+            )
+            defaults.set(dedupeKey, forKey: Keys.lastRecoveryNotificationKey)
+        } catch {
+            // Keep refresh healthy even if notification delivery fails.
+        }
+    }
+
+    private func notifyResetCardExpiryIfNeeded(info: ResetCardInfo?) async {
+        guard let info,
+              info.unlimited == false,
+              (info.balance ?? 0) > 0,
+              let expiresAt = info.expiresAt else {
+            return
+        }
+
+        let secondsUntilExpiry = expiresAt.timeIntervalSinceNow
+        guard secondsUntilExpiry > 0, secondsUntilExpiry <= 86_400 else {
+            return
+        }
+
+        let dedupeKey = "reset-card-expiry-\(Int(expiresAt.timeIntervalSince1970))-\(info.balance ?? 0)"
+        guard defaults.string(forKey: Keys.lastResetCardExpiryNotificationKey) != dedupeKey else {
+            return
+        }
+
+        do {
+            try await deliver(
+                identifier: "codex-usage-\(dedupeKey)",
+                title: "Codex 重置卡即将过期",
+                body: "剩余 \(info.balance ?? 0) 次，约 \(UsageFormatters.relativeDateString(for: expiresAt))后过期。"
+            )
+            defaults.set(dedupeKey, forKey: Keys.lastResetCardExpiryNotificationKey)
         } catch {
             // Keep refresh healthy even if notification delivery fails.
         }
@@ -139,6 +226,10 @@ final class NotificationManager {
 
     private enum Keys {
         static let lastNotificationKey = "lastNotificationKey"
+        static let lastUsageHealth = "lastUsageHealth"
+        static let lastRecoveryNotificationKey = "lastRecoveryNotificationKey"
+        static let lastResetCardExpiryNotificationKey = "lastResetCardExpiryNotificationKey"
+        static let lastRefreshFailureKey = "lastRefreshFailureKey"
     }
 
     private enum DeliveryError: LocalizedError {

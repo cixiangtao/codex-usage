@@ -109,12 +109,19 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
     @Published var reasoningEffort: CodexReasoningEffort = .medium
     @Published var runCount = 3
     @Published private(set) var runs: [CodexIntelligenceCheckRun] = []
+    @Published private(set) var historyEntries: [CodexIntelligenceCheckHistoryEntry]
     @Published private(set) var isRunning = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var installationState: CodexCLIInstallationState = .unknown
 
     private var task: Task<Void, Never>?
     private var hasLoadedConfiguredModel = false
+    private let historyStore: CodexIntelligenceCheckHistoryStore
+
+    init(historyStore: CodexIntelligenceCheckHistoryStore = CodexIntelligenceCheckHistoryStore()) {
+        self.historyStore = historyStore
+        historyEntries = historyStore.load()
+    }
 
     var completedCount: Int {
         runs.filter { $0.isCorrect != nil }.count
@@ -258,7 +265,32 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
             }
 
             isRunning = false
+            recordHistoryIfUseful(model: selectedModel, effort: effort, requestedCount: tests)
         }
+    }
+
+    private func recordHistoryIfUseful(model: String?, effort: CodexReasoningEffort, requestedCount: Int) {
+        let completedRuns = runs.filter { $0.isCorrect != nil }
+        guard !completedRuns.isEmpty else { return }
+
+        let correctCount = completedRuns.filter { $0.isCorrect == true }.count
+        let reasoningValues = completedRuns.compactMap(\.reasoningOutputTokens)
+        let tpsValues = completedRuns.compactMap(\.tokensPerSecond)
+
+        let entry = CodexIntelligenceCheckHistoryEntry(
+            id: UUID(),
+            capturedAt: Date(),
+            modelName: model ?? detectedModelName ?? "Codex CLI 默认模型",
+            reasoningEffort: effort.title,
+            requestedCount: requestedCount,
+            completedCount: completedRuns.count,
+            correctCount: correctCount,
+            averageReasoningTokens: reasoningValues.isEmpty ? nil : reasoningValues.reduce(0, +) / reasoningValues.count,
+            averageTokensPerSecond: tpsValues.isEmpty ? nil : tpsValues.reduce(0, +) / Double(tpsValues.count),
+            conclusionTitle: conclusion.title
+        )
+
+        historyEntries = historyStore.appending(entry, to: historyEntries)
     }
 }
 
@@ -278,6 +310,10 @@ struct CodexIntelligenceCheckRows: View {
                         resultRow(run)
                     }
                 }
+            }
+
+            if !viewModel.historyEntries.isEmpty {
+                historySection
             }
         }
         .task {
@@ -382,6 +418,112 @@ struct CodexIntelligenceCheckRows: View {
                 metricCell("TPS", viewModel.averageTPSText, tint: .secondary)
             }
         }
+    }
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("历史基线", systemImage: "clock.arrow.circlepath")
+                    .font(.caption.weight(.semibold))
+
+                Spacer()
+
+                Text(historyComparisonText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(Array(viewModel.historyEntries.prefix(3))) { entry in
+                historyRow(entry)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func historyRow(_ entry: CodexIntelligenceCheckHistoryEntry) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(UsageFormatters.fullDateTime(entry.capturedAt)) · \(entry.conclusionTitle)")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+
+                Text("\(entry.modelName) / \(entry.reasoningEffort)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 8)
+
+            Text(historyMetricText(for: entry))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(8)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private var historyComparisonText: String {
+        guard viewModel.completedCount > 0 else {
+            return "最近 \(viewModel.historyEntries.count) 次"
+        }
+
+        guard let baseline = comparisonBaseline else {
+            return "已建立本机基线"
+        }
+
+        let currentAccuracy = Int((Double(viewModel.correctCount) / Double(viewModel.completedCount) * 100).rounded())
+        let accuracyDelta = currentAccuracy - baseline.accuracyPercent
+        let accuracyText = accuracyDelta == 0 ? "正确率持平" : "正确率 \(signedPercent(accuracyDelta))"
+
+        guard let currentReasoning = currentAverageReasoningTokens(),
+              let baselineReasoning = baseline.averageReasoningTokens else {
+            return "较上次：\(accuracyText)"
+        }
+
+        return "较上次：\(accuracyText) · 思考 \(signedTokens(currentReasoning - baselineReasoning))"
+    }
+
+    private var comparisonBaseline: CodexIntelligenceCheckHistoryEntry? {
+        guard viewModel.completedCount > 0 else {
+            return viewModel.historyEntries.first
+        }
+
+        if let latest = viewModel.historyEntries.first,
+           latest.completedCount == viewModel.completedCount,
+           latest.correctCount == viewModel.correctCount {
+            return Array(viewModel.historyEntries.dropFirst()).first
+        }
+
+        return viewModel.historyEntries.first
+    }
+
+    private func currentAverageReasoningTokens() -> Int? {
+        let values = viewModel.runs.compactMap(\.reasoningOutputTokens)
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / values.count
+    }
+
+    private func historyMetricText(for entry: CodexIntelligenceCheckHistoryEntry) -> String {
+        let reasoning = entry.averageReasoningTokens.map(UsageFormatters.compactTokens) ?? "--"
+        let tps = entry.averageTokensPerSecond.map { String(format: "%.1f", $0) } ?? "--"
+        return "\(entry.accuracyPercent)% · 思考 \(reasoning) · \(tps) t/s"
+    }
+
+    private func signedPercent(_ value: Int) -> String {
+        value > 0 ? "+\(value)%" : "\(value)%"
+    }
+
+    private func signedTokens(_ value: Int) -> String {
+        if value == 0 {
+            return "持平"
+        }
+
+        let prefix = value > 0 ? "+" : "-"
+        return "\(prefix)\(UsageFormatters.compactTokens(abs(value)))"
     }
 
     private func metricCell(_ label: String, _ value: String, tint: Color) -> some View {

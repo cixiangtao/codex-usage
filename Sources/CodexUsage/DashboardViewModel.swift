@@ -88,6 +88,10 @@ final class DashboardViewModel: ObservableObject {
             }.value
         } catch {
             lastError = error.localizedDescription
+            await notificationManager.notifyRefreshFailureIfNeeded(
+                error: error,
+                notificationsEnabled: notificationsEnabled
+            )
         }
     }
 }
