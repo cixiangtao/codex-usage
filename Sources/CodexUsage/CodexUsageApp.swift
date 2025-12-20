@@ -135,8 +135,10 @@ struct MenuBarContent: View {
         }
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))
-        .task {
-            await updateViewModel.checkIfNeeded()
+        .onAppear {
+            Task {
+                await updateViewModel.checkForPresentedSurface()
+            }
         }
     }
 
@@ -260,6 +262,10 @@ final class SettingsWindowPresenter {
     private init() {}
 
     func show(settings: AppSettings, viewModel: DashboardViewModel, updateViewModel: UpdateCheckViewModel) {
+        Task {
+            await updateViewModel.checkForPresentedSurface()
+        }
+
         if let window {
             show(window, floatsAboveOtherApps: false)
             return
@@ -917,9 +923,6 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
-        .task {
-            await updateViewModel.checkIfNeeded()
-        }
         .alert("重置偏好设置？", isPresented: $isResetConfirmationPresented) {
             Button("取消", role: .cancel) {}
             Button("重置", role: .destructive) {
@@ -1124,8 +1127,7 @@ final class UpdateCheckViewModel: ObservableObject {
         canInstallAvailableUpdate ? "下载并更新到新版本" : "当前环境无法自动安装，打开发布页"
     }
 
-    func checkIfNeeded() async {
-        guard result == nil, errorMessage == nil else { return }
+    func checkForPresentedSurface() async {
         await check()
     }
 
@@ -1330,7 +1332,7 @@ struct UpdateCheckRows: View {
         }
 
         guard let result = viewModel.result else {
-            return "打开设置时会自动检查一次，也可以手动重试。"
+            return "打开悬浮窗或设置时会自动检查，也可以手动重试。"
         }
 
         if result.isUpdateAvailable {
