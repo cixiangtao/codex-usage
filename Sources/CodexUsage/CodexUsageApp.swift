@@ -541,7 +541,7 @@ struct UsageTrendChartView: View {
     @State private var hoveredPointID: String?
 
     private let barSpacing: Double = 3
-    private let barWidth: Double = 6
+    private let maxBarWidth: Double = 12
     private let rangeOptions = [7, 14, 30]
 
     private var displayedPoints: [UsageTrendPoint] {
@@ -573,11 +573,14 @@ struct UsageTrendChartView: View {
                 .help("切换每日用量图表的展示范围")
 
                 GeometryReader { proxy in
+                    let barWidth = barWidth(for: displayedPoints.count, in: proxy.size.width)
+
                     HStack(alignment: .bottom, spacing: barSpacing) {
                         ForEach(displayedPoints) { point in
                             Capsule(style: .continuous)
                                 .fill(barColor(for: point))
                                 .frame(width: barWidth, height: barHeight(for: point, in: proxy.size.height))
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                                 .contentShape(Rectangle())
                                 .onHover { isHovering in
                                     hoveredPointID = isHovering ? point.id : nil
@@ -629,6 +632,13 @@ struct UsageTrendChartView: View {
 
     private var maxTokens: Int {
         max(displayedPoints.map(\.totalTokens).max() ?? 0, 1)
+    }
+
+    private func barWidth(for count: Int, in availableWidth: Double) -> Double {
+        guard count > 0 else { return maxBarWidth }
+        let totalSpacing = barSpacing * Double(max(count - 1, 0))
+        let availableBarWidth = max(0, availableWidth - totalSpacing)
+        return min(maxBarWidth, availableBarWidth / Double(count))
     }
 
     private func barHeight(for point: UsageTrendPoint, in availableHeight: Double) -> Double {
