@@ -137,40 +137,25 @@ struct CodexUsageProvider: UsageProvider {
     }
 
     func fetchTrendPoints(codexHomePath: String, relativeTo date: Date) async throws -> [UsageTrendPoint] {
-        if let remotePoints = try? await fetchRemoteTrendPoints(codexHomePath: codexHomePath, relativeTo: date),
-           !remotePoints.isEmpty {
-            return remotePoints
-        }
-
         return try fetchLocalTrendPoints(codexHomePath: codexHomePath, relativeTo: date)
-    }
-
-    private func fetchRemoteTrendPoints(codexHomePath: String, relativeTo date: Date) async throws
-        -> [UsageTrendPoint]?
-    {
-        let credentials = try loadAuthCredentials(codexHomePath: codexHomePath)
-        let data = try await fetchRemoteUsageData(credentials: credentials)
-        return remoteTrendPoints(from: data, relativeTo: date)
     }
 
     private func fetchLocalTrendPoints(codexHomePath: String, relativeTo date: Date) throws -> [UsageTrendPoint] {
         let sessionRoots = codexSessionRoots(codexHomePath: codexHomePath)
-        guard !sessionRoots.isEmpty else {
-            return []
-        }
+        if !sessionRoots.isEmpty {
+            let accountScope = currentLocalAccountScope(codexHomePath: codexHomePath)
+            let jsonlTrend = try fetchJSONLTrendPoints(
+                sessionRoots: sessionRoots,
+                accountScope: accountScope,
+                relativeTo: date
+            )
+            if !jsonlTrend.points.isEmpty {
+                return jsonlTrend.points
+            }
 
-        let accountScope = currentLocalAccountScope(codexHomePath: codexHomePath)
-        let jsonlTrend = try fetchJSONLTrendPoints(
-            sessionRoots: sessionRoots,
-            accountScope: accountScope,
-            relativeTo: date
-        )
-        if !jsonlTrend.points.isEmpty {
-            return jsonlTrend.points
-        }
-
-        if accountScope != nil, jsonlTrend.sawTokenEvents {
-            return []
+            if accountScope != nil, jsonlTrend.sawTokenEvents {
+                return []
+            }
         }
 
         if let threadTrendPoints = try fetchThreadTrendPoints(codexHomePath: codexHomePath, relativeTo: date) {
@@ -587,74 +572,6 @@ struct CodexUsageProvider: UsageProvider {
         }
     }
 
-    private func remoteTrendPoints(from data: Data, relativeTo date: Date) -> [UsageTrendPoint]? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) else {
-            return nil
-        }
-
-        var totalsByDay: [Date: Int] = [:]
-        collectRemoteDailyTokenTotals(from: root, into: &totalsByDay)
-        guard !totalsByDay.isEmpty else {
-            return nil
-        }
-
-        let calendar = Calendar.current
-        let latestDay = calendar.startOfDay(for: date)
-        let startOffset = -(maxTrendDays - 1)
-        guard let firstDay = calendar.date(byAdding: .day, value: startOffset, to: latestDay) else {
-            return nil
-        }
-
-        return (0..<maxTrendDays).compactMap { offset in
-            guard let day = calendar.date(byAdding: .day, value: offset, to: firstDay) else {
-                return nil
-            }
-
-            return UsageTrendPoint(
-                capturedAt: day,
-                totalTokens: totalsByDay[day, default: 0]
-            )
-        }
-    }
-
-    private func collectRemoteDailyTokenTotals(from value: Any, into totalsByDay: inout [Date: Int]) {
-        if let array = value as? [Any] {
-            for item in array {
-                collectRemoteDailyTokenTotals(from: item, into: &totalsByDay)
-            }
-            return
-        }
-
-        guard let object = value as? [String: Any] else {
-            return
-        }
-
-        if let day = firstDateValue(
-            in: object,
-            keys: ["day", "date", "captured_at", "capturedAt", "created_at", "createdAt"]
-        ),
-           let totalTokens = firstIntValue(
-               in: object,
-               keys: ["total_tokens", "totalTokens", "tokens_used", "tokensUsed"]
-           ),
-           totalTokens > 0 {
-            totalsByDay[Calendar.current.startOfDay(for: day), default: 0] += totalTokens
-        }
-
-        for nested in object.values {
-            collectRemoteDailyTokenTotals(from: nested, into: &totalsByDay)
-        }
-    }
-
-    private func firstIntValue(in object: [String: Any], keys: [String]) -> Int? {
-        for key in keys {
-            if let value = optionalIntValue(object[key]) {
-                return value
-            }
-        }
-
-        return nil
-    }
 
     private func firstStringValue(in objects: [[String: Any]?], keys: [String]) -> String? {
         for object in objects.compactMap({ $0 }) {
