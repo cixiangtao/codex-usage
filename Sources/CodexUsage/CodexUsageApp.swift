@@ -257,6 +257,7 @@ final class SettingsWindowPresenter {
 
     private static let contentSize = NSSize(width: 500, height: 620)
 
+    private let intelligenceCheckViewModel = CodexIntelligenceCheckViewModel()
     private var window: NSWindow?
 
     private init() {}
@@ -265,6 +266,9 @@ final class SettingsWindowPresenter {
         Task {
             await updateViewModel.checkForPresentedSurface()
         }
+        Task {
+            await intelligenceCheckViewModel.prepareForPresentation(codexHomePath: settings.codexHomePath)
+        }
 
         if let window {
             show(window, floatsAboveOtherApps: false)
@@ -272,7 +276,12 @@ final class SettingsWindowPresenter {
         }
 
         let hostingController = NSHostingController(
-            rootView: SettingsView(settings: settings, viewModel: viewModel, updateViewModel: updateViewModel)
+            rootView: SettingsView(
+                settings: settings,
+                viewModel: viewModel,
+                updateViewModel: updateViewModel,
+                intelligenceCheckViewModel: intelligenceCheckViewModel
+            )
                 .frame(width: Self.contentSize.width, height: Self.contentSize.height)
         )
 
@@ -784,7 +793,7 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var viewModel: DashboardViewModel
     @ObservedObject var updateViewModel: UpdateCheckViewModel
-    @StateObject private var intelligenceCheckViewModel = CodexIntelligenceCheckViewModel()
+    @ObservedObject var intelligenceCheckViewModel: CodexIntelligenceCheckViewModel
     #if DEBUG
     @State private var debugNotificationAlertMessage = ""
     @State private var debugNotificationAlertTitle = ""

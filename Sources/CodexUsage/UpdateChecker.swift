@@ -150,7 +150,7 @@ private struct GitLabReleaseAssetLink: Decodable, Equatable, Sendable {
     }
 }
 
-private struct SemanticVersion: Comparable, Equatable {
+struct SemanticVersion: Comparable, Equatable {
     private var parts: [Int]
 
     init?(_ version: String) {

@@ -1,27 +1,20 @@
 import Foundation
 import AppKit
+import Darwin
 import SwiftUI
 
-enum CodexReasoningEffort: String, CaseIterable, Identifiable {
-    case low
-    case medium
-    case high
-    case xhigh
+struct CodexReasoningEffort: RawRepresentable, Hashable, Identifiable, Sendable {
+    let rawValue: String
+
+    init?(rawValue: String) {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        self.rawValue = value
+    }
 
     var id: String { rawValue }
 
-    var title: String {
-        switch self {
-        case .low:
-            "low"
-        case .medium:
-            "medium"
-        case .high:
-            "high"
-        case .xhigh:
-            "xhigh"
-        }
-    }
+    var title: String { rawValue }
 }
 
 struct CodexIntelligenceCheckRun: Identifiable, Equatable, Sendable {
@@ -58,6 +51,17 @@ enum CodexCLIInstallationState: Equatable {
     var isInstalled: Bool {
         executablePath != nil
     }
+}
+
+struct CodexModelOption: Identifiable, Equatable, Sendable {
+    var id: String { slug }
+
+    var slug: String
+    var displayName: String
+    var supportedReasoningEfforts: [CodexReasoningEffort]
+    var defaultReasoningEffort: CodexReasoningEffort?
+    var isDefault: Bool
+    var isConfiguredFallback: Bool
 }
 
 enum CodexIntelligenceCheckConclusion {
@@ -103,20 +107,26 @@ enum CodexIntelligenceCheckConclusion {
 final class CodexIntelligenceCheckViewModel: ObservableObject {
     static let installGuideURL = URL(string: "https://developers.openai.com/codex/quickstart")!
 
-    @Published var modelName = ""
+    @Published private(set) var modelName = ""
+    @Published private(set) var modelOptions: [CodexModelOption] = []
+    @Published private(set) var cliDefaultModelDisplayName: String?
+    @Published private(set) var modelListErrorMessage: String?
     @Published private(set) var detectedModelName: String?
     @Published private(set) var detectedReasoningEffort: CodexReasoningEffort?
-    @Published var reasoningEffort: CodexReasoningEffort = .medium
+    @Published private(set) var reasoningEffortOptions: [CodexReasoningEffort] = []
+    @Published var reasoningEffort: CodexReasoningEffort?
     @Published var runCount = 3
     @Published private(set) var runs: [CodexIntelligenceCheckRun] = []
     @Published private(set) var historyEntries: [CodexIntelligenceCheckHistoryEntry]
     @Published private(set) var isRunning = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var installationState: CodexCLIInstallationState = .unknown
+    @Published private(set) var cliUpdateState: CodexCLIUpdateState = .idle
+    @Published private(set) var isPreparingEnvironment = false
 
     private var task: Task<Void, Never>?
-    private var hasLoadedConfiguredModel = false
     private let historyStore: CodexIntelligenceCheckHistoryStore
+    private let cliUpdater = CodexCLIUpdater()
 
     init(historyStore: CodexIntelligenceCheckHistoryStore = CodexIntelligenceCheckHistoryStore()) {
         self.historyStore = historyStore
@@ -172,37 +182,270 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
     }
 
     var canStart: Bool {
-        !isRunning && installationState.isInstalled
+        !controlsAreDisabled && installationState.isInstalled
     }
 
-    func checkInstallationIfNeeded(codexHomePath: String) async {
-        await loadConfiguredModelIfNeeded(codexHomePath: codexHomePath)
+    var controlsAreDisabled: Bool {
+        isRunning || isPreparingEnvironment || cliUpdateState.blocksDetection
+    }
 
-        if case .unknown = installationState {
-            await checkInstallation()
+    var effectiveCLIDefaultModelDisplayName: String? {
+        guard let detectedModelName else {
+            return cliDefaultModelDisplayName
+        }
+
+        return modelOptions.first(where: { $0.slug == detectedModelName })?.displayName
+            ?? detectedModelName
+    }
+
+    func selectModel(_ modelName: String) {
+        guard self.modelName != modelName else { return }
+        self.modelName = modelName
+        synchronizeReasoningEffort(
+            preferred: modelName.isEmpty ? detectedReasoningEffort : nil
+        )
+    }
+
+    func prepareForPresentation(codexHomePath: String) async {
+        guard !isRunning, !isPreparingEnvironment else { return }
+        if case .updating = cliUpdateState { return }
+
+        isPreparingEnvironment = true
+        await checkInstallation()
+
+        guard let executablePath = installationState.executablePath else {
+            cliUpdateState = .idle
+            await reloadConfiguredDefaults(codexHomePath: codexHomePath, executablePath: nil)
+            isPreparingEnvironment = false
+            return
+        }
+
+        cliUpdateState = .checking
+
+        do {
+            let update = try await cliUpdater.checkForUpdate(executablePath: executablePath)
+            if update.isUpdateAvailable {
+                cliUpdateState = .updateAvailable(update)
+                isPreparingEnvironment = false
+                return
+            }
+
+            await reloadConfiguredDefaults(
+                codexHomePath: codexHomePath,
+                executablePath: executablePath
+            )
+            if let modelListErrorMessage {
+                cliUpdateState = .failed(
+                    currentVersion: update.currentVersion,
+                    message: modelListErrorMessage
+                )
+            } else {
+                cliUpdateState = .current(update.currentVersion)
+            }
+        } catch {
+            let currentVersion = try? await cliUpdater.installedVersion(at: executablePath)
+            await reloadConfiguredDefaults(
+                codexHomePath: codexHomePath,
+                executablePath: executablePath
+            )
+            cliUpdateState = .failed(
+                currentVersion: currentVersion,
+                message: error.localizedDescription
+            )
+        }
+
+        isPreparingEnvironment = false
+    }
+
+    func deferCLIUpdate(codexHomePath: String) {
+        guard case .updateAvailable(let update) = cliUpdateState else { return }
+
+        cliUpdateState = .deferred(update)
+        isPreparingEnvironment = true
+        Task { [weak self] in
+            guard let self else { return }
+            await reloadConfiguredDefaults(
+                codexHomePath: codexHomePath,
+                executablePath: update.executablePath
+            )
+            if let modelListErrorMessage {
+                cliUpdateState = .failed(
+                    currentVersion: update.currentVersion,
+                    message: modelListErrorMessage
+                )
+            }
+            isPreparingEnvironment = false
         }
     }
 
-    func loadConfiguredModelIfNeeded(codexHomePath: String) async {
-        guard !hasLoadedConfiguredModel else { return }
-        hasLoadedConfiguredModel = true
+    func beginCLIUpdate() -> CodexCLIUpdateCheckResult? {
+        guard !isPreparingEnvironment else { return nil }
 
+        let update: CodexCLIUpdateCheckResult
+        switch cliUpdateState {
+        case .updateAvailable(let result), .deferred(let result):
+            update = result
+        default:
+            return nil
+        }
+
+        cliUpdateState = .updating(update)
+        return update
+    }
+
+    func performCLIUpdate(
+        _ update: CodexCLIUpdateCheckResult,
+        codexHomePath: String
+    ) async {
+        do {
+            try await cliUpdater.update(
+                executablePath: update.executablePath,
+                codexHomePath: codexHomePath
+            )
+
+            let executablePath = try await Task.detached(priority: .userInitiated) {
+                try CodexExecutableResolver.resolve()
+            }.value
+            let installedVersion = try await cliUpdater.installedVersion(at: executablePath)
+
+            guard let expected = SemanticVersion(update.latestVersion),
+                  let actual = SemanticVersion(installedVersion),
+                  actual >= expected else {
+                throw CodexCLIUpdateError.verificationFailed(
+                    expected: update.latestVersion,
+                    actual: installedVersion
+                )
+            }
+
+            installationState = .installed(executablePath)
+            await reloadConfiguredDefaults(
+                codexHomePath: codexHomePath,
+                executablePath: executablePath
+            )
+            if let modelListErrorMessage {
+                cliUpdateState = .failed(
+                    currentVersion: installedVersion,
+                    message: "CLI 已更新，但\(modelListErrorMessage)"
+                )
+            } else {
+                cliUpdateState = .updated(installedVersion)
+            }
+        } catch {
+            let fallbackPath = (try? await Task.detached(priority: .utility) {
+                try CodexExecutableResolver.resolve()
+            }.value) ?? update.executablePath
+            let currentVersion = try? await cliUpdater.installedVersion(at: fallbackPath)
+
+            if FileManager.default.isExecutableFile(atPath: fallbackPath) {
+                installationState = .installed(fallbackPath)
+            } else {
+                installationState = .missing
+            }
+            await reloadConfiguredDefaults(
+                codexHomePath: codexHomePath,
+                executablePath: installationState.executablePath
+            )
+            cliUpdateState = .failed(
+                currentVersion: currentVersion ?? update.currentVersion,
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    func reloadConfiguredDefaults(
+        codexHomePath: String,
+        executablePath: String?
+    ) async {
         let configuredDefaults = await Task.detached(priority: .utility) {
-            CodexConfigModelResolver.resolveConfiguredDefaults(codexHomePath: codexHomePath)
+            CodexConfigModelResolver.resolveConfiguredDefaults(
+                codexHomePath: codexHomePath,
+                executablePath: executablePath
+            )
         }.value
 
         detectedModelName = configuredDefaults.model
         detectedReasoningEffort = configuredDefaults.reasoningEffort
+        cliDefaultModelDisplayName = configuredDefaults.cliDefaultModelDisplayName
+        modelListErrorMessage = configuredDefaults.modelListErrorMessage
 
-        if let configuredModel = configuredDefaults.model,
-           modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            modelName = configuredModel
+        var modelOptions = configuredDefaults.modelOptions
+        appendFallbackModelIfNeeded(
+            configuredDefaults.model,
+            reasoningEffort: configuredDefaults.reasoningEffort,
+            isConfigured: true,
+            to: &modelOptions
+        )
+        if isRunning {
+            appendFallbackModelIfNeeded(
+                modelName,
+                reasoningEffort: reasoningEffort,
+                isConfigured: false,
+                to: &modelOptions
+            )
+        }
+        self.modelOptions = modelOptions
+
+        guard !isRunning else { return }
+
+        modelName = configuredDefaults.model ?? ""
+        synchronizeReasoningEffort(preferred: configuredDefaults.reasoningEffort)
+    }
+
+    private func appendFallbackModelIfNeeded(
+        _ modelName: String?,
+        reasoningEffort: CodexReasoningEffort?,
+        isConfigured: Bool,
+        to modelOptions: inout [CodexModelOption]
+    ) {
+        guard let modelName = modelName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !modelName.isEmpty,
+              !modelOptions.contains(where: { $0.slug == modelName }) else {
+            return
         }
 
-        if let configuredReasoningEffort = configuredDefaults.reasoningEffort,
-           reasoningEffort == .medium {
-            reasoningEffort = configuredReasoningEffort
+        modelOptions.append(
+            CodexModelOption(
+                slug: modelName,
+                displayName: modelName,
+                supportedReasoningEfforts: reasoningEffort.map { [$0] } ?? [],
+                defaultReasoningEffort: reasoningEffort,
+                isDefault: false,
+                isConfiguredFallback: isConfigured
+            )
+        )
+    }
+
+    private func synchronizeReasoningEffort(preferred: CodexReasoningEffort?) {
+        guard let model = selectedModelOption else {
+            reasoningEffortOptions = []
+            reasoningEffort = nil
+            return
         }
+
+        let options = model.supportedReasoningEfforts
+        reasoningEffortOptions = options
+
+        if let preferred, options.contains(preferred) {
+            reasoningEffort = preferred
+        } else if let defaultReasoningEffort = model.defaultReasoningEffort,
+                  options.contains(defaultReasoningEffort) {
+            reasoningEffort = defaultReasoningEffort
+        } else {
+            reasoningEffort = options.first
+        }
+    }
+
+    private var selectedModelOption: CodexModelOption? {
+        if !modelName.isEmpty {
+            return modelOptions.first(where: { $0.slug == modelName })
+        }
+
+        if let detectedModelName,
+           let configuredModel = modelOptions.first(where: { $0.slug == detectedModelName }) {
+            return configuredModel
+        }
+
+        return modelOptions.first(where: \.isDefault)
     }
 
     func checkInstallation() async {
@@ -269,7 +512,7 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
         }
     }
 
-    private func recordHistoryIfUseful(model: String?, effort: CodexReasoningEffort, requestedCount: Int) {
+    private func recordHistoryIfUseful(model: String?, effort: CodexReasoningEffort?, requestedCount: Int) {
         let completedRuns = runs.filter { $0.isCorrect != nil }
         guard !completedRuns.isEmpty else { return }
 
@@ -281,7 +524,7 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
             id: UUID(),
             capturedAt: Date(),
             modelName: model ?? detectedModelName ?? "Codex CLI 默认模型",
-            reasoningEffort: effort.title,
+            reasoningEffort: effort?.title ?? detectedReasoningEffort?.title ?? "CLI 默认",
             requestedCount: requestedCount,
             completedCount: completedRuns.count,
             correctCount: correctCount,
@@ -300,7 +543,9 @@ struct CodexIntelligenceCheckRows: View {
 
     var body: some View {
         VStack(spacing: 10) {
+            cliUpdateNotice
             statusRow
+            runningNotice
             controls
 
             if !viewModel.runs.isEmpty {
@@ -316,9 +561,116 @@ struct CodexIntelligenceCheckRows: View {
                 historySection
             }
         }
-        .task {
-            await viewModel.checkInstallationIfNeeded(codexHomePath: codexHomePath)
+        .alert("发现 Codex CLI 更新", isPresented: cliUpdateAlertBinding) {
+            Button("暂不更新", role: .cancel) {
+                viewModel.deferCLIUpdate(codexHomePath: codexHomePath)
+            }
+            Button("更新 CLI") {
+                startCLIUpdate()
+            }
+        } message: {
+            Text(cliUpdateAlertMessage)
         }
+    }
+
+    @ViewBuilder
+    private var cliUpdateNotice: some View {
+        switch viewModel.cliUpdateState {
+        case .idle, .current:
+            EmptyView()
+        case .checking:
+            cliUpdateNoticeRow(
+                title: "正在检查 Codex CLI 更新",
+                subtitle: "完成前暂不能开始降智检测。",
+                tint: .secondary
+            ) {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        case .updateAvailable(let update):
+            cliUpdateNoticeRow(
+                title: "Codex CLI 可更新至 \(update.latestVersion)",
+                subtitle: "当前 \(update.currentVersion)，等待确认是否更新。",
+                tint: .orange
+            ) {
+                Text("待确认")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+        case .deferred(let update):
+            cliUpdateNoticeRow(
+                title: "Codex CLI 可更新至 \(update.latestVersion)",
+                subtitle: "已暂缓更新，当前仍使用 \(update.currentVersion)。",
+                tint: .orange
+            ) {
+                Button("更新 CLI") {
+                    startCLIUpdate()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.isPreparingEnvironment)
+            }
+        case .updating(let update):
+            cliUpdateNoticeRow(
+                title: "正在更新 Codex CLI",
+                subtitle: "\(update.currentVersion) → \(update.latestVersion)，完成后会重新获取模型列表。",
+                tint: .orange
+            ) {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        case .updated(let version):
+            cliUpdateNoticeRow(
+                title: "Codex CLI 已更新至 \(version)",
+                subtitle: "已重新读取默认配置和模型列表。",
+                tint: .green
+            ) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+        case let .failed(currentVersion, message):
+            cliUpdateNoticeRow(
+                title: "Codex CLI 状态异常",
+                subtitle: "\(currentVersion.map { "当前 \($0)。" } ?? "")\(message) 不影响继续使用当前 CLI 检测。",
+                tint: .red
+            ) {
+                Button("重试") {
+                    Task {
+                        await viewModel.prepareForPresentation(codexHomePath: codexHomePath)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.isPreparingEnvironment)
+            }
+        }
+    }
+
+    private func cliUpdateNoticeRow<Trailing: View>(
+        title: String,
+        subtitle: String,
+        tint: Color,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.down.circle.fill")
+                .foregroundStyle(tint)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+            trailing()
+        }
+        .padding(10)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var statusRow: some View {
@@ -341,26 +693,84 @@ struct CodexIntelligenceCheckRows: View {
         .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
+    @ViewBuilder
+    private var runningNotice: some View {
+        if viewModel.isRunning {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("检测进行中，请勿关闭设置窗口")
+                        .font(.caption.weight(.semibold))
+
+                    Text("请保持 CodexUsage 运行，等待全部 \(viewModel.runCount) 次检测完成；期间不要退出应用。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Text("\(viewModel.runs.count)/\(viewModel.runCount)")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+            .padding(10)
+            .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.orange.opacity(0.25), lineWidth: 1)
+            )
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                "检测进行中，请勿关闭设置窗口。已完成 \(viewModel.runs.count) 次，共 \(viewModel.runCount) 次。"
+            )
+        }
+    }
+
     private var controls: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                TextField("本地默认模型", text: $viewModel.modelName)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(viewModel.isRunning)
+                Picker("模型名称", selection: modelSelection) {
+                    Text(defaultModelOptionTitle)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .tag("")
+
+                    ForEach(viewModel.modelOptions) { model in
+                        Text(modelOptionTitle(model))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .tag(model.slug)
+                    }
+                }
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+                .disabled(viewModel.controlsAreDisabled)
+                .help("选择用于降智检测的模型")
 
                 Stepper("\(viewModel.runCount) 次", value: $viewModel.runCount, in: 1...10)
                     .frame(width: 92, alignment: .trailing)
-                    .disabled(viewModel.isRunning)
+                    .disabled(viewModel.controlsAreDisabled)
             }
 
             Picker("推理强度", selection: $viewModel.reasoningEffort) {
-                ForEach(CodexReasoningEffort.allCases) { effort in
-                    Text(effort.title).tag(effort)
+                if viewModel.reasoningEffortOptions.isEmpty {
+                    Text("CLI 默认").tag(CodexReasoningEffort?.none)
+                } else {
+                    ForEach(viewModel.reasoningEffortOptions) { effort in
+                        Text(effort.title).tag(CodexReasoningEffort?.some(effort))
+                    }
                 }
             }
             .pickerStyle(.segmented)
             .controlSize(.small)
-            .disabled(viewModel.isRunning)
+            .disabled(viewModel.controlsAreDisabled || viewModel.reasoningEffortOptions.isEmpty)
+            .help(reasoningEffortHelp)
 
             HStack(spacing: 8) {
                 Button {
@@ -392,14 +802,14 @@ struct CodexIntelligenceCheckRows: View {
                 } else {
                     Button {
                         Task {
-                            await viewModel.checkInstallation()
+                            await viewModel.prepareForPresentation(codexHomePath: codexHomePath)
                         }
                     } label: {
                         Label("重新检测", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(viewModel.isRunning || viewModel.installationState == .checking)
+                    .disabled(viewModel.controlsAreDisabled || viewModel.installationState == .checking)
                 }
 
                 Spacer()
@@ -407,6 +817,58 @@ struct CodexIntelligenceCheckRows: View {
         }
         .padding(10)
         .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var cliUpdateAlertBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.cliUpdateState.pendingUpdate != nil },
+            set: { isPresented in
+                guard !isPresented else { return }
+                Task { @MainActor in
+                    await Task.yield()
+                    viewModel.deferCLIUpdate(codexHomePath: codexHomePath)
+                }
+            }
+        )
+    }
+
+    private var cliUpdateAlertMessage: String {
+        guard let update = viewModel.cliUpdateState.pendingUpdate else { return "" }
+        return "当前版本 \(update.currentVersion)，最新版本 \(update.latestVersion)。将更新 \(update.executablePath)，完成后自动重新获取模型列表。"
+    }
+
+    private func startCLIUpdate() {
+        guard let update = viewModel.beginCLIUpdate() else { return }
+        Task {
+            await viewModel.performCLIUpdate(update, codexHomePath: codexHomePath)
+        }
+    }
+
+    private func modelOptionTitle(_ model: CodexModelOption) -> String {
+        model.isConfiguredFallback ? "\(model.displayName)（当前配置）" : model.displayName
+    }
+
+    private var defaultModelOptionTitle: String {
+        guard let displayName = viewModel.effectiveCLIDefaultModelDisplayName else {
+            return "Codex CLI 默认模型"
+        }
+
+        return "Codex CLI 默认模型（\(displayName)）"
+    }
+
+    private var modelSelection: Binding<String> {
+        Binding(
+            get: { viewModel.modelName },
+            set: { viewModel.selectModel($0) }
+        )
+    }
+
+    private var reasoningEffortHelp: String {
+        if viewModel.reasoningEffortOptions.isEmpty {
+            return "Codex CLI 未返回该模型的推理强度列表，将使用 CLI 默认值。"
+        }
+
+        return "选项来自当前模型返回的推理强度列表。"
     }
 
     private var summaryGrid: some View {
@@ -646,20 +1108,24 @@ struct CodexIntelligenceCheckRows: View {
         }
 
         if let executablePath = viewModel.installationState.executablePath, viewModel.completedCount == 0, !viewModel.isRunning {
+            let cliDescription = viewModel.cliUpdateState.currentVersion
+                .map { "Codex CLI \($0) · \(executablePath)" }
+                ?? "已找到 \(executablePath)"
+
             if let detectedModelName = viewModel.detectedModelName,
                let detectedReasoningEffort = viewModel.detectedReasoningEffort {
-                return "已找到 \(executablePath)，默认使用 \(detectedModelName) / \(detectedReasoningEffort.title)。"
+                return "\(cliDescription)，默认使用 \(detectedModelName) / \(detectedReasoningEffort.title)。"
             }
 
             if let detectedModelName = viewModel.detectedModelName {
-                return "已找到 \(executablePath)，默认使用配置模型 \(detectedModelName)。"
+                return "\(cliDescription)，默认使用配置模型 \(detectedModelName)。"
             }
 
             if let detectedReasoningEffort = viewModel.detectedReasoningEffort {
-                return "已找到 \(executablePath)，默认使用配置推理强度 \(detectedReasoningEffort.title)。"
+                return "\(cliDescription)，默认使用配置推理强度 \(detectedReasoningEffort.title)。"
             }
 
-            return "已找到 \(executablePath)，未配置模型时会使用 Codex CLI 默认模型。"
+            return "\(cliDescription)，未配置模型时会使用 Codex CLI 默认模型。"
         }
 
         if viewModel.isRunning {
@@ -719,12 +1185,12 @@ private enum CodexExecutableResolver {
             return path
         }
 
-        if let path = try? shellCodexPath(), !path.isEmpty {
+        if let path = try? shellCodexPath(), isUsableCandidate(path) {
             return path
         }
 
         for candidate in fallbackCandidates {
-            if FileManager.default.isExecutableFile(atPath: candidate) {
+            if isUsableCandidate(candidate) {
                 return candidate
             }
         }
@@ -740,7 +1206,7 @@ private enum CodexExecutableResolver {
                 .appendingPathComponent("codex")
                 .path
 
-            if FileManager.default.isExecutableFile(atPath: candidate) {
+            if isUsableCandidate(candidate) {
                 return candidate
             }
         }
@@ -754,11 +1220,12 @@ private enum CodexExecutableResolver {
 
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-lc", "command -v codex"]
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = output
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
 
         try process.run()
-        process.waitUntilExit()
+        guard process.waitUntilExit(timeout: 5) else { return "" }
 
         guard process.terminationStatus == 0 else {
             return ""
@@ -767,6 +1234,12 @@ private enum CodexExecutableResolver {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func isUsableCandidate(_ path: String) -> Bool {
+        guard FileManager.default.isExecutableFile(atPath: path) else { return false }
+        let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        return !resolvedPath.contains(".app/Contents/Resources/")
     }
 
     private static var fallbackCandidates: [String] {
@@ -781,25 +1254,293 @@ private enum CodexExecutableResolver {
     }
 }
 
+private enum CodexModelListResolver {
+    struct Result {
+        var modelOptions: [CodexModelOption]
+        var defaultModelDisplayName: String?
+        var errorMessage: String?
+    }
+
+    private struct ResponseIdentifier: Decodable {
+        var id: Int?
+    }
+
+    private struct ModelListResponse: Decodable {
+        struct ResponseResult: Decodable {
+            struct Model: Decodable {
+                struct ReasoningEffortOption: Decodable {
+                    var reasoningEffort: String?
+                }
+
+                var model: String?
+                var displayName: String?
+                var hidden: Bool?
+                var isDefault: Bool?
+                var supportedReasoningEfforts: [ReasoningEffortOption]?
+                var defaultReasoningEffort: String?
+            }
+
+            var data: [Model]
+            var nextCursor: String?
+        }
+
+        var id: Int?
+        var result: ResponseResult?
+    }
+
+    static func resolve(
+        codexHomePath: String,
+        executablePath: String?,
+        configuredModel: String?
+    ) -> Result {
+        guard let executablePath else {
+            return Result(modelOptions: [], defaultModelDisplayName: nil, errorMessage: nil)
+        }
+
+        let process = Process()
+        let input = Pipe()
+        let output = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = ["app-server", "--stdio"]
+        process.currentDirectoryURL = FileManager.default.temporaryDirectory
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CODEX_HOME"] = codexHomePath
+        process.environment = environment
+
+        do {
+            try process.run()
+        } catch {
+            return Result(
+                modelOptions: [],
+                defaultModelDisplayName: nil,
+                errorMessage: "无法启动 Codex CLI 模型服务：\(error.localizedDescription)"
+            )
+        }
+
+        defer {
+            try? input.fileHandleForWriting.close()
+            process.terminateAndWait()
+        }
+
+        let deadline = Date().addingTimeInterval(8)
+        var responseBuffer: [UInt8] = []
+
+        guard writeJSON(
+            [
+                "method": "initialize",
+                "id": 0,
+                "params": [
+                    "clientInfo": [
+                        "name": "codex_usage",
+                        "title": "CodexUsage",
+                        "version": "0.1.0"
+                    ]
+                ]
+            ],
+            to: input.fileHandleForWriting
+        ), readResponseLine(
+            id: 0,
+            from: output.fileHandleForReading,
+            buffer: &responseBuffer,
+            deadline: deadline
+        ) != nil,
+        writeJSON(
+            ["method": "initialized", "params": [:]],
+            to: input.fileHandleForWriting
+        ) else {
+            return Result(
+                modelOptions: [],
+                defaultModelDisplayName: nil,
+                errorMessage: "初始化 Codex CLI 模型服务超时。"
+            )
+        }
+
+        var models: [ModelListResponse.ResponseResult.Model] = []
+        var cursor: String?
+        var requestID = 1
+        var listErrorMessage: String?
+
+        repeat {
+            let cursorValue: Any = cursor ?? NSNull()
+            guard writeJSON(
+                [
+                    "method": "model/list",
+                    "id": requestID,
+                    "params": [
+                        "cursor": cursorValue,
+                        "limit": 100,
+                        "includeHidden": true
+                    ]
+                ],
+                to: input.fileHandleForWriting
+            ), let responseLine = readResponseLine(
+                id: requestID,
+                from: output.fileHandleForReading,
+                buffer: &responseBuffer,
+                deadline: deadline
+            ), let response = try? JSONDecoder().decode(ModelListResponse.self, from: responseLine),
+            let result = response.result else {
+                listErrorMessage = "读取 Codex CLI 模型列表失败或超时。"
+                break
+            }
+
+            models.append(contentsOf: result.data)
+            cursor = result.nextCursor
+            requestID += 1
+        } while cursor != nil
+
+        var seenModels = Set<String>()
+        var defaultModelDisplayName: String?
+        let modelOptions = models.compactMap { model -> CodexModelOption? in
+            guard let slug = model.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !slug.isEmpty,
+                  model.hidden != true || slug == configuredModel || model.isDefault == true,
+                  seenModels.insert(slug).inserted else {
+                return nil
+            }
+
+            let displayName = model.displayName?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedDisplayName = displayName.flatMap { $0.isEmpty ? nil : $0 } ?? slug
+
+            if model.isDefault == true {
+                defaultModelDisplayName = resolvedDisplayName
+            }
+
+            var seenEfforts = Set<CodexReasoningEffort>()
+            var supportedReasoningEfforts = (model.supportedReasoningEfforts ?? []).compactMap {
+                $0.reasoningEffort
+                    .flatMap(CodexReasoningEffort.init(rawValue:))
+            }.filter { seenEfforts.insert($0).inserted }
+            let defaultReasoningEffort = model.defaultReasoningEffort
+                .flatMap(CodexReasoningEffort.init(rawValue:))
+
+            if supportedReasoningEfforts.isEmpty,
+               let defaultReasoningEffort {
+                supportedReasoningEfforts = [defaultReasoningEffort]
+            }
+
+            return CodexModelOption(
+                slug: slug,
+                displayName: resolvedDisplayName,
+                supportedReasoningEfforts: supportedReasoningEfforts,
+                defaultReasoningEffort: defaultReasoningEffort,
+                isDefault: model.isDefault == true,
+                isConfiguredFallback: model.hidden == true && slug == configuredModel
+            )
+        }
+
+        return Result(
+            modelOptions: modelOptions,
+            defaultModelDisplayName: defaultModelDisplayName,
+            errorMessage: listErrorMessage
+        )
+    }
+
+    private static func writeJSON(_ object: [String: Any], to fileHandle: FileHandle) -> Bool {
+        guard JSONSerialization.isValidJSONObject(object),
+              var data = try? JSONSerialization.data(withJSONObject: object) else {
+            return false
+        }
+
+        data.append(0x0A)
+        do {
+            try fileHandle.write(contentsOf: data)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func readResponseLine(
+        id: Int,
+        from fileHandle: FileHandle,
+        buffer: inout [UInt8],
+        deadline: Date
+    ) -> Data? {
+        while true {
+            while let newlineIndex = buffer.firstIndex(of: 0x0A) {
+                let line = Data(buffer[..<newlineIndex])
+                buffer.removeFirst(newlineIndex + 1)
+
+                if let identifier = try? JSONDecoder().decode(ResponseIdentifier.self, from: line),
+                   identifier.id == id {
+                    return line
+                }
+            }
+
+            let remainingSeconds = deadline.timeIntervalSinceNow
+            guard remainingSeconds > 0 else { return nil }
+
+            var descriptor = pollfd(
+                fd: fileHandle.fileDescriptor,
+                events: Int16(POLLIN | POLLHUP),
+                revents: 0
+            )
+            let timeoutMilliseconds = Int32(min(remainingSeconds * 1_000, Double(Int32.max)))
+            let pollResult = poll(&descriptor, 1, max(1, timeoutMilliseconds))
+
+            if pollResult == 0 {
+                return nil
+            }
+
+            if pollResult < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                return nil
+            }
+
+            var chunk = [UInt8](repeating: 0, count: 8_192)
+            let bytesRead = chunk.withUnsafeMutableBytes { bytes in
+                Darwin.read(fileHandle.fileDescriptor, bytes.baseAddress, bytes.count)
+            }
+
+            guard bytesRead > 0 else { return nil }
+            buffer.append(contentsOf: chunk.prefix(bytesRead))
+        }
+    }
+
+}
+
 private enum CodexConfigModelResolver {
     struct Defaults {
         var model: String?
         var reasoningEffort: CodexReasoningEffort?
+        var modelOptions: [CodexModelOption]
+        var cliDefaultModelDisplayName: String?
+        var modelListErrorMessage: String?
     }
 
-    static func resolveConfiguredDefaults(codexHomePath: String) -> Defaults {
+    static func resolveConfiguredDefaults(
+        codexHomePath: String,
+        executablePath: String?
+    ) -> Defaults {
         let configURL = URL(fileURLWithPath: codexHomePath)
             .appendingPathComponent("config.toml")
-
-        guard let config = try? String(contentsOf: configURL, encoding: .utf8) else {
-            return Defaults(model: nil, reasoningEffort: nil)
-        }
-
-        let model = parseTopLevelStringValue(named: "model", in: config)
-        let reasoningEffort = parseTopLevelStringValue(named: "model_reasoning_effort", in: config)
+        let config = try? String(contentsOf: configURL, encoding: .utf8)
+        let model = config.flatMap { parseTopLevelStringValue(named: "model", in: $0) }
+        let reasoningEffort = config
+            .flatMap { parseTopLevelStringValue(named: "model_reasoning_effort", in: $0) }
             .flatMap(CodexReasoningEffort.init(rawValue:))
+        let modelList = CodexModelListResolver.resolve(
+            codexHomePath: codexHomePath,
+            executablePath: executablePath,
+            configuredModel: model
+        )
 
-        return Defaults(model: model, reasoningEffort: reasoningEffort)
+        return Defaults(
+            model: model,
+            reasoningEffort: reasoningEffort,
+            modelOptions: modelList.modelOptions,
+            cliDefaultModelDisplayName: modelList.defaultModelDisplayName,
+            modelListErrorMessage: modelList.errorMessage
+        )
     }
 
     private static func parseTopLevelStringValue(named key: String, in toml: String) -> String? {
@@ -876,7 +1617,7 @@ private enum CodexIntelligenceCheckRunner {
         index: Int,
         executablePath: String,
         model: String?,
-        effort: CodexReasoningEffort
+        effort: CodexReasoningEffort?
     ) -> CodexIntelligenceCheckRun {
         let start = Date()
 
@@ -915,7 +1656,7 @@ private enum CodexIntelligenceCheckRunner {
     private static func runCodex(
         executablePath: String,
         model: String?,
-        effort: CodexReasoningEffort
+        effort: CodexReasoningEffort?
     ) throws -> CodexCommandResult {
         let process = Process()
         let input = Pipe()
@@ -968,7 +1709,7 @@ private enum CodexIntelligenceCheckRunner {
         return parseOutput(outputText)
     }
 
-    private static func arguments(model: String?, effort: CodexReasoningEffort) -> [String] {
+    private static func arguments(model: String?, effort: CodexReasoningEffort?) -> [String] {
         var values = [
             "exec",
             "--json",
@@ -977,10 +1718,12 @@ private enum CodexIntelligenceCheckRunner {
             "-s",
             "read-only",
             "--disable",
-            "memories",
-            "-c",
-            "model_reasoning_effort=\(effort.rawValue)"
+            "memories"
         ]
+
+        if let effort {
+            values.append(contentsOf: ["-c", "model_reasoning_effort=\(effort.rawValue)"])
+        }
 
         if let model {
             values.append(contentsOf: ["-m", model])
