@@ -3,6 +3,8 @@ import AppKit
 import Darwin
 import SwiftUI
 
+private let intelligenceCheckSampleTimeout: TimeInterval = 120
+
 struct CodexReasoningEffort: RawRepresentable, Hashable, Identifiable, Sendable {
     let rawValue: String
 
@@ -27,11 +29,18 @@ struct CodexIntelligenceCheckRun: Identifiable, Equatable, Sendable {
     var elapsedSeconds: Double
     var isCorrect: Bool?
     var errorMessage: String?
+    var failureKind: CodexIntelligenceCheckFailureKind?
 
     var tokensPerSecond: Double? {
         guard let outputTokens, elapsedSeconds > 0 else { return nil }
         return Double(outputTokens) / elapsedSeconds
     }
+}
+
+enum CodexIntelligenceCheckFailureKind: Equatable, Sendable {
+    case command
+    case cancelled
+    case timedOut
 }
 
 enum CodexCLIInstallationState: Equatable {
@@ -119,6 +128,7 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
     @Published private(set) var runs: [CodexIntelligenceCheckRun] = []
     @Published private(set) var historyEntries: [CodexIntelligenceCheckHistoryEntry]
     @Published private(set) var isRunning = false
+    @Published private(set) var currentRunIndex: Int?
     @Published private(set) var errorMessage: String?
     @Published private(set) var installationState: CodexCLIInstallationState = .unknown
     @Published private(set) var cliUpdateState: CodexCLIUpdateState = .idle
@@ -127,6 +137,7 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
     private var task: Task<Void, Never>?
     private let historyStore: CodexIntelligenceCheckHistoryStore
     private let cliUpdater = CodexCLIUpdater()
+    private let processController = CodexProcessLifetimeController()
 
     init(historyStore: CodexIntelligenceCheckHistoryStore = CodexIntelligenceCheckHistoryStore()) {
         self.historyStore = historyStore
@@ -487,29 +498,43 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
         runs = []
         errorMessage = nil
         isRunning = true
+        processController.reset()
+        let processController = self.processController
 
         task = Task { [weak self] in
             guard let self else { return }
 
             for index in 1...tests {
                 if Task.isCancelled { break }
+                currentRunIndex = index
 
                 let run = await Task.detached(priority: .userInitiated) {
                     CodexIntelligenceCheckRunner.runOne(
                         index: index,
                         executablePath: executablePath,
                         model: selectedModel,
-                        effort: effort
+                        effort: effort,
+                        processController: processController
                     )
                 }.value
+                currentRunIndex = nil
 
-                if Task.isCancelled { break }
+                if Task.isCancelled || run.failureKind == .cancelled { break }
                 runs.append(run)
+                if run.failureKind == .timedOut { break }
             }
 
             isRunning = false
+            currentRunIndex = nil
+            task = nil
             recordHistoryIfUseful(model: selectedModel, effort: effort, requestedCount: tests)
         }
+    }
+
+    func cancel() {
+        guard isRunning else { return }
+        task?.cancel()
+        processController.cancelAndTerminate()
     }
 
     private func recordHistoryIfUseful(model: String?, effort: CodexReasoningEffort?, requestedCount: Int) {
@@ -701,10 +726,10 @@ struct CodexIntelligenceCheckRows: View {
                     .foregroundStyle(.orange)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("检测进行中，请勿关闭设置窗口")
+                    Text("检测进行中")
                         .font(.caption.weight(.semibold))
 
-                    Text("请保持 CodexUsage 运行，等待全部 \(viewModel.runCount) 次检测完成；期间不要退出应用。")
+                    Text("单次最长等待 2 分钟；关闭窗口或退出应用会自动取消当前检测。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -724,7 +749,7 @@ struct CodexIntelligenceCheckRows: View {
             )
             .accessibilityElement(children: .combine)
             .accessibilityLabel(
-                "检测进行中，请勿关闭设置窗口。已完成 \(viewModel.runs.count) 次，共 \(viewModel.runCount) 次。"
+                "检测进行中。已完成 \(viewModel.runs.count) 次，共 \(viewModel.runCount) 次。关闭窗口或退出应用会自动取消。"
             )
         }
     }
@@ -773,23 +798,28 @@ struct CodexIntelligenceCheckRows: View {
             .help(reasoningEffortHelp)
 
             HStack(spacing: 8) {
-                Button {
-                    viewModel.start()
-                } label: {
-                    Label {
-                        Text(viewModel.isRunning ? "检测中" : "开始检测")
-                    } icon: {
-                        if viewModel.isRunning {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
+                if viewModel.isRunning {
+                    Button(role: .cancel) {
+                        viewModel.cancel()
+                    } label: {
+                        Label("取消检测", systemImage: "stop.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button {
+                        viewModel.start()
+                    } label: {
+                        Label {
+                            Text("开始检测")
+                        } icon: {
                             Image(systemName: "play.fill")
                         }
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!viewModel.canStart)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(!viewModel.canStart)
 
                 if viewModel.installationState == .missing {
                     Button {
@@ -1083,6 +1113,10 @@ struct CodexIntelligenceCheckRows: View {
             return "正在检测智能状态"
         }
 
+        if viewModel.runs.last?.failureKind == .timedOut {
+            return "检测超时"
+        }
+
         if viewModel.errorMessage != nil {
             return "检测无法启动"
         }
@@ -1107,6 +1141,12 @@ struct CodexIntelligenceCheckRows: View {
             return "需要先安装 Codex CLI。安装说明：\(CodexIntelligenceCheckViewModel.installGuideURL.absoluteString)"
         }
 
+        if let lastRun = viewModel.runs.last,
+           lastRun.failureKind == .timedOut,
+           let errorMessage = lastRun.errorMessage {
+            return errorMessage
+        }
+
         if let executablePath = viewModel.installationState.executablePath, viewModel.completedCount == 0, !viewModel.isRunning {
             let cliDescription = viewModel.cliUpdateState.currentVersion
                 .map { "Codex CLI \($0) · \(executablePath)" }
@@ -1129,7 +1169,11 @@ struct CodexIntelligenceCheckRows: View {
         }
 
         if viewModel.isRunning {
-            return "已完成 \(viewModel.runs.count)/\(viewModel.runCount)，正在运行样本检测。"
+            if let currentRunIndex = viewModel.currentRunIndex {
+                return "正在运行第 \(currentRunIndex)/\(viewModel.runCount) 个样本，单次最长等待 2 分钟。"
+            }
+
+            return "正在准备样本检测。"
         }
 
         if viewModel.completedCount > 0 {
@@ -1617,7 +1661,8 @@ private enum CodexIntelligenceCheckRunner {
         index: Int,
         executablePath: String,
         model: String?,
-        effort: CodexReasoningEffort?
+        effort: CodexReasoningEffort?,
+        processController: CodexProcessLifetimeController
     ) -> CodexIntelligenceCheckRun {
         let start = Date()
 
@@ -1625,7 +1670,8 @@ private enum CodexIntelligenceCheckRunner {
             let result = try runCodex(
                 executablePath: executablePath,
                 model: model,
-                effort: effort
+                effort: effort,
+                processController: processController
             )
             let elapsed = Date().timeIntervalSince(start)
 
@@ -1637,7 +1683,32 @@ private enum CodexIntelligenceCheckRunner {
                 reasoningOutputTokens: result.reasoningOutputTokens,
                 elapsedSeconds: elapsed,
                 isCorrect: isCorrectAnswer(result.answer),
-                errorMessage: nil
+                errorMessage: nil,
+                failureKind: nil
+            )
+        } catch let error as CodexProcessLifetimeError {
+            let failureKind: CodexIntelligenceCheckFailureKind
+            let message: String
+
+            switch error {
+            case .cancelled:
+                failureKind = .cancelled
+                message = "检测已取消，Codex CLI 已终止。"
+            case .timedOut:
+                failureKind = .timedOut
+                message = "单次检测超过 2 分钟，已自动终止 Codex CLI。"
+            }
+
+            return CodexIntelligenceCheckRun(
+                index: index,
+                answer: "",
+                inputTokens: nil,
+                outputTokens: nil,
+                reasoningOutputTokens: nil,
+                elapsedSeconds: Date().timeIntervalSince(start),
+                isCorrect: nil,
+                errorMessage: message,
+                failureKind: failureKind
             )
         } catch {
             return CodexIntelligenceCheckRun(
@@ -1648,7 +1719,8 @@ private enum CodexIntelligenceCheckRunner {
                 reasoningOutputTokens: nil,
                 elapsedSeconds: Date().timeIntervalSince(start),
                 isCorrect: nil,
-                errorMessage: error.localizedDescription
+                errorMessage: error.localizedDescription,
+                failureKind: .command
             )
         }
     }
@@ -1656,7 +1728,8 @@ private enum CodexIntelligenceCheckRunner {
     private static func runCodex(
         executablePath: String,
         model: String?,
-        effort: CodexReasoningEffort?
+        effort: CodexReasoningEffort?,
+        processController: CodexProcessLifetimeController
     ) throws -> CodexCommandResult {
         let process = Process()
         let input = Pipe()
@@ -1686,13 +1759,19 @@ private enum CodexIntelligenceCheckRunner {
         process.arguments = arguments(model: model, effort: effort)
 
         try process.run()
+        guard processController.register(process) else {
+            throw CodexProcessLifetimeError.cancelled
+        }
 
         if let data = prompt.data(using: .utf8) {
             input.fileHandleForWriting.write(data)
         }
         try? input.fileHandleForWriting.close()
 
-        process.waitUntilExit()
+        try processController.waitForExit(
+            of: process,
+            timeout: intelligenceCheckSampleTimeout
+        )
 
         try? outputHandle.synchronize()
         try? errorHandle.synchronize()

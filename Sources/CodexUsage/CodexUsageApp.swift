@@ -1,8 +1,16 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        SettingsWindowPresenter.shared.cancelIntelligenceCheck()
+    }
+}
+
 @main
 struct CodexUsageApp: App {
+    @NSApplicationDelegateAdaptor(CodexUsageAppDelegate.self) private var appDelegate
     @StateObject private var settings = AppSettings()
     @StateObject private var viewModel = DashboardViewModel()
     @StateObject private var updateViewModel = UpdateCheckViewModel()
@@ -252,7 +260,7 @@ struct MenuBarContent: View {
 }
 
 @MainActor
-final class SettingsWindowPresenter {
+final class SettingsWindowPresenter: NSObject, NSWindowDelegate {
     static let shared = SettingsWindowPresenter()
 
     private static let contentSize = NSSize(width: 500, height: 620)
@@ -260,7 +268,9 @@ final class SettingsWindowPresenter {
     private let intelligenceCheckViewModel = CodexIntelligenceCheckViewModel()
     private var window: NSWindow?
 
-    private init() {}
+    private override init() {
+        super.init()
+    }
 
     func show(settings: AppSettings, viewModel: DashboardViewModel, updateViewModel: UpdateCheckViewModel) {
         Task {
@@ -291,10 +301,19 @@ final class SettingsWindowPresenter {
         nextWindow.styleMask = [.titled, .closable, .miniaturizable]
         nextWindow.isReleasedWhenClosed = false
         nextWindow.collectionBehavior = [.moveToActiveSpace]
+        nextWindow.delegate = self
         nextWindow.center()
 
         window = nextWindow
         show(nextWindow, floatsAboveOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        cancelIntelligenceCheck()
+    }
+
+    func cancelIntelligenceCheck() {
+        intelligenceCheckViewModel.cancel()
     }
 
     private func show(_ window: NSWindow, floatsAboveOtherApps: Bool) {
