@@ -938,6 +938,7 @@ struct CodexIntelligenceCheckRows: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(UsageFormatters.fullDateTime(entry.capturedAt)) · \(entry.conclusionTitle)")
                     .font(.caption.weight(.medium))
+                    .foregroundStyle(historyConclusionTint(for: entry))
                     .lineLimit(1)
 
                 Text("\(entry.modelName) / \(entry.reasoningEffort)")
@@ -1003,6 +1004,17 @@ struct CodexIntelligenceCheckRows: View {
         let reasoning = entry.averageReasoningTokens.map(UsageFormatters.compactTokens) ?? "--"
         let tps = entry.averageTokensPerSecond.map { String(format: "%.1f", $0) } ?? "--"
         return "\(entry.accuracyPercent)% · 思考 \(reasoning) · \(tps) t/s"
+    }
+
+    private func historyConclusionTint(for entry: CodexIntelligenceCheckHistoryEntry) -> Color {
+        switch entry.conclusionTitle {
+        case "未发现降智", "未降智":
+            .green
+        case "疑似降智":
+            .red
+        default:
+            .secondary
+        }
     }
 
     private func signedPercent(_ value: Int) -> String {
