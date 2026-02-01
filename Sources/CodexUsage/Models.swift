@@ -52,6 +52,15 @@ enum CodexRateWindowKind {
     case primary
     case secondary
 
+    private var expectedWindowMinutes: Int {
+        switch self {
+        case .primary:
+            5 * 60
+        case .secondary:
+            7 * 24 * 60
+        }
+    }
+
     var defaultDisplayName: String {
         switch self {
         case .primary:
@@ -70,12 +79,21 @@ enum CodexRateWindowKind {
     }
 
     func window(in snapshot: CodexUsageSnapshot) -> RateWindow? {
-        switch self {
+        let windows = [snapshot.primary, snapshot.secondary].compactMap { $0 }
+        if let matchingWindow = windows.first(where: { $0.windowMinutes == expectedWindowMinutes }) {
+            return matchingWindow
+        }
+
+        let positionalWindow = switch self {
         case .primary:
             snapshot.primary
         case .secondary:
             snapshot.secondary
         }
+
+        // Older snapshots may not include a duration, so retain the API's
+        // positional meaning only when there is no better semantic signal.
+        return positionalWindow?.windowMinutes == nil ? positionalWindow : nil
     }
 
     static func displayName(minutes: Int) -> String {

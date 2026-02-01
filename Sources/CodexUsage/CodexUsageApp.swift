@@ -64,30 +64,33 @@ struct StatusBarLabel: View {
         }
     }
 
-    private var labelText: String {
-        var parts: [String] = []
+    var labelText: String {
+        var enabledKinds: [CodexRateWindowKind] = []
 
         if showPrimary {
-            parts.append(windowText(.primary))
+            enabledKinds.append(.primary)
         }
 
         if showSecondary {
-            parts.append(windowText(.secondary))
+            enabledKinds.append(.secondary)
         }
 
-        if parts.isEmpty {
+        guard !enabledKinds.isEmpty else {
             return ""
         }
 
-        return parts.joined(separator: " · ")
+        let availableParts = enabledKinds.compactMap(windowText)
+        if !availableParts.isEmpty || snapshot.primary != nil || snapshot.secondary != nil {
+            return availableParts.joined(separator: " · ")
+        }
+
+        return enabledKinds
+            .map { showLabels ? "\($0.defaultDisplayName) --%" : "--%" }
+            .joined(separator: " · ")
     }
 
-    private func windowText(_ kind: CodexRateWindowKind) -> String {
-        let window = kind.window(in: snapshot)
-
-        guard let window else {
-            return showLabels ? "\(kind.defaultDisplayName) --%" : "--%"
-        }
+    private func windowText(_ kind: CodexRateWindowKind) -> String? {
+        guard let window = kind.window(in: snapshot) else { return nil }
 
         let percent = "\(Int(window.remainingPercent.rounded()))%"
         return showLabels ? "\(window.displayName) \(percent)" : percent
@@ -875,8 +878,8 @@ struct SettingsView: View {
                         #if DEBUG
                         NotificationDebugRows(
                             isEnabled: settings.notificationsEnabled,
-                            primaryWindow: viewModel.snapshot.primary,
-                            secondaryWindow: viewModel.snapshot.secondary,
+                            primaryWindow: CodexRateWindowKind.primary.window(in: viewModel.snapshot),
+                            secondaryWindow: CodexRateWindowKind.secondary.window(in: viewModel.snapshot),
                             sendingTarget: sendingDebugNotificationTarget,
                             action: sendDebugNotification
                         )
