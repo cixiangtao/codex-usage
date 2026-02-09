@@ -7,37 +7,57 @@ final class DashboardViewModel: ObservableObject {
     @Published var isRefreshing = false
     @Published var lastError: String?
 
-    private let provider: UsageProvider
+    private let quotaProvider: UsageProvider
+    private let trendProvider: UsageProvider
     private let sharedStore: SharedSnapshotStore
     private let notificationManager: NotificationManager
+    private let trendRefreshInterval: TimeInterval
     private var refreshTask: Task<Void, Never>?
+    private var trendRefreshTask: Task<Void, Never>?
+    private var isRefreshingTrend = false
+    private var lastTrendRefreshAt: Date?
+    private var lastTrendCodexHomePath: String?
 
     init(
-        provider: UsageProvider = CodexUsageProvider(),
+        provider: UsageProvider? = nil,
+        trendProvider: UsageProvider? = nil,
         sharedStore: SharedSnapshotStore = SharedSnapshotStore(),
-        notificationManager: NotificationManager = NotificationManager()
+        notificationManager: NotificationManager = NotificationManager(),
+        trendRefreshInterval: TimeInterval = 10 * 60
     ) {
-        self.provider = provider
+        if let provider {
+            quotaProvider = provider
+            self.trendProvider = trendProvider ?? provider
+        } else {
+            quotaProvider = CodexUsageProvider()
+            self.trendProvider = trendProvider ?? CodexUsageProvider()
+        }
         self.sharedStore = sharedStore
         self.notificationManager = notificationManager
+        self.trendRefreshInterval = max(60, trendRefreshInterval)
         snapshot = sharedStore.load() ?? .empty
     }
 
     deinit {
         refreshTask?.cancel()
+        trendRefreshTask?.cancel()
     }
 
     func startAutoRefresh(settings: AppSettings) {
         refreshTask?.cancel()
-        refreshTask = Task { [weak self, weak settings] in
-            guard let self, let settings else { return }
-
-            await notificationManager.requestAuthorizationIfNeeded(enabled: settings.notificationsEnabled)
+        let notificationManager = notificationManager
+        let notificationsEnabled = settings.notificationsEnabled
+        refreshTask = Task(priority: .utility) { [weak self, weak settings] in
+            await notificationManager.requestAuthorizationIfNeeded(enabled: notificationsEnabled)
 
             while !Task.isCancelled {
-                await self.refresh(settings: settings)
+                let delay: TimeInterval
+                do {
+                    guard let settings else { return }
+                    await self?.refresh(settings: settings, includeTrend: false)
+                    delay = max(15, settings.refreshIntervalSeconds)
+                }
 
-                let delay = max(15, settings.refreshIntervalSeconds)
                 do {
                     try await Task.sleep(for: .seconds(delay))
                 } catch {
@@ -47,7 +67,22 @@ final class DashboardViewModel: ObservableObject {
         }
     }
 
-    func refresh(settings: AppSettings) async {
+    func stopAutoRefresh() {
+        refreshTask?.cancel()
+        refreshTask = nil
+    }
+
+    func scheduleTrendRefresh(settings: AppSettings) {
+        guard trendRefreshTask == nil else { return }
+
+        trendRefreshTask = Task(priority: .utility) { [weak self, weak settings] in
+            defer { self?.trendRefreshTask = nil }
+            guard let settings else { return }
+            await self?.refreshTrendIfNeeded(settings: settings)
+        }
+    }
+
+    func refresh(settings: AppSettings, includeTrend: Bool = true) async {
         guard !isRefreshing else { return }
 
         isRefreshing = true
@@ -57,15 +92,15 @@ final class DashboardViewModel: ObservableObject {
         let warningThreshold = settings.warningThresholdPercent
         let criticalThreshold = settings.criticalThresholdPercent
         let notificationsEnabled = settings.notificationsEnabled
-        let provider = provider
+        let provider = quotaProvider
 
         do {
-            let nextSnapshot = try await Task.detached(priority: .userInitiated) {
-                try await provider.fetchLatestSnapshot(codexHomePath: codexHomePath)
-            }.value
+            let nextSnapshot = try await provider.fetchLatestSnapshot(codexHomePath: codexHomePath)
 
             snapshot = nextSnapshot
-            lastError = nil
+            if lastError != nil {
+                lastError = nil
+            }
             sharedStore.save(nextSnapshot)
 
             let health = UsageHealth.evaluate(
@@ -79,19 +114,48 @@ final class DashboardViewModel: ObservableObject {
                 health: health,
                 notificationsEnabled: notificationsEnabled
             )
-
-            trendPoints = try await Task.detached(priority: .utility) {
-                try await provider.fetchTrendPoints(
-                    codexHomePath: codexHomePath,
-                    relativeTo: nextSnapshot.capturedAt
-                )
-            }.value
         } catch {
+            guard !Task.isCancelled else { return }
             lastError = error.localizedDescription
             await notificationManager.notifyRefreshFailureIfNeeded(
                 error: error,
                 notificationsEnabled: notificationsEnabled
             )
+        }
+
+        if includeTrend {
+            await refreshTrendIfNeeded(settings: settings, force: true)
+        }
+    }
+
+    func refreshTrendIfNeeded(settings: AppSettings, force: Bool = false) async {
+        guard !isRefreshingTrend else { return }
+
+        let codexHomePath = settings.codexHomePath
+        if !force,
+           lastTrendCodexHomePath == codexHomePath,
+           let lastTrendRefreshAt,
+           Date().timeIntervalSince(lastTrendRefreshAt) < trendRefreshInterval {
+            return
+        }
+
+        isRefreshingTrend = true
+        defer { isRefreshingTrend = false }
+
+        do {
+            let nextPoints = try await trendProvider.fetchTrendPoints(
+                codexHomePath: codexHomePath,
+                relativeTo: Date()
+            )
+            if trendPoints != nextPoints {
+                trendPoints = nextPoints
+            }
+            lastTrendCodexHomePath = codexHomePath
+            lastTrendRefreshAt = Date()
+        } catch is CancellationError {
+            return
+        } catch {
+            // Quota refresh remains healthy and the last trend stays visible.
         }
     }
 }

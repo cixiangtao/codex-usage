@@ -147,7 +147,8 @@ struct MenuBarContent: View {
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
-            Task {
+            viewModel.scheduleTrendRefresh(settings: settings)
+            Task(priority: .utility) {
                 await updateViewModel.checkForPresentedSurface()
             }
         }
