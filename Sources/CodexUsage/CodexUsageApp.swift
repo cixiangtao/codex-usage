@@ -271,22 +271,29 @@ final class SettingsWindowPresenter: NSObject, NSWindowDelegate {
 
     private let intelligenceCheckViewModel = CodexIntelligenceCheckViewModel()
     private var window: NSWindow?
+    private var updatePreparationTask: Task<Void, Never>?
+    private var intelligencePreparationTask: Task<Void, Never>?
 
     private override init() {
         super.init()
     }
 
     func show(settings: AppSettings, viewModel: DashboardViewModel, updateViewModel: UpdateCheckViewModel) {
-        Task {
-            await updateViewModel.checkForPresentedSurface()
-        }
-        Task {
-            await intelligenceCheckViewModel.prepareForPresentation(codexHomePath: settings.codexHomePath)
-        }
-
         if let window {
             show(window, floatsAboveOtherApps: false)
             return
+        }
+
+        updatePreparationTask?.cancel()
+        updatePreparationTask = Task { [weak updateViewModel] in
+            await updateViewModel?.checkForPresentedSurface()
+        }
+
+        intelligencePreparationTask?.cancel()
+        let intelligenceCheckViewModel = intelligenceCheckViewModel
+        let codexHomePath = settings.codexHomePath
+        intelligencePreparationTask = Task { [weak intelligenceCheckViewModel] in
+            await intelligenceCheckViewModel?.prepareForPresentation(codexHomePath: codexHomePath)
         }
 
         let hostingController = NSHostingController(
@@ -314,9 +321,22 @@ final class SettingsWindowPresenter: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         cancelIntelligenceCheck()
+
+        guard let closingWindow = notification.object as? NSWindow,
+              closingWindow === window else {
+            return
+        }
+
+        closingWindow.delegate = nil
+        closingWindow.contentViewController = nil
+        window = nil
     }
 
     func cancelIntelligenceCheck() {
+        updatePreparationTask?.cancel()
+        updatePreparationTask = nil
+        intelligencePreparationTask?.cancel()
+        intelligencePreparationTask = nil
         intelligenceCheckViewModel.cancel()
     }
 
@@ -576,11 +596,14 @@ struct UsageTrendChartView: View {
     private let maxBarWidth: Double = 12
     private let rangeOptions = [7, 14, 30]
 
-    private var displayedPoints: [UsageTrendPoint] {
-        Array(points.suffix(validRangeDays))
-    }
-
     var body: some View {
+        let displayedPoints = Array(points.suffix(validRangeDays))
+        let maxTokens = displayedPoints.reduce(1) { max($0, $1.totalTokens) }
+        let latest = displayedPoints.last
+        let hoveredPoint = hoveredPointID.flatMap { hoveredPointID in
+            displayedPoints.first { $0.id == hoveredPointID }
+        }
+
         if !displayedPoints.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
@@ -589,7 +612,7 @@ struct UsageTrendChartView: View {
 
                     Spacer()
 
-                    Text(readoutText)
+                    Text(readoutText(hoveredPoint: hoveredPoint, latest: latest))
                         .font(.caption.monospacedDigit().weight(.medium))
                         .foregroundStyle(.secondary)
                 }
@@ -610,8 +633,11 @@ struct UsageTrendChartView: View {
                     HStack(alignment: .bottom, spacing: barSpacing) {
                         ForEach(displayedPoints) { point in
                             Capsule(style: .continuous)
-                                .fill(barColor(for: point))
-                                .frame(width: barWidth, height: barHeight(for: point, in: proxy.size.height))
+                                .fill(barColor(for: point, latestID: latest?.id))
+                                .frame(
+                                    width: barWidth,
+                                    height: barHeight(for: point, maxTokens: maxTokens, in: proxy.size.height)
+                                )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                                 .contentShape(Rectangle())
                                 .onHover { isHovering in
@@ -642,28 +668,22 @@ struct UsageTrendChartView: View {
         }
     }
 
-    private var readoutText: String {
-        guard let hoveredPoint else { return summaryText }
+    private func readoutText(
+        hoveredPoint: UsageTrendPoint?,
+        latest: UsageTrendPoint?
+    ) -> String {
+        guard let hoveredPoint else { return summaryText(latest: latest) }
         return "\(dayText(for: hoveredPoint.capturedAt)) \(UsageFormatters.compactTokens(hoveredPoint.totalTokens))"
     }
 
-    private var hoveredPoint: UsageTrendPoint? {
-        guard let hoveredPointID else { return nil }
-        return displayedPoints.first { $0.id == hoveredPointID }
-    }
-
-    private var summaryText: String {
-        guard let latest = displayedPoints.last else { return "--" }
+    private func summaryText(latest: UsageTrendPoint?) -> String {
+        guard let latest else { return "--" }
         let prefix = Calendar.current.isDateInToday(latest.capturedAt) ? "今日" : "最近"
         return "\(prefix) \(UsageFormatters.compactTokens(latest.totalTokens))"
     }
 
     private var validRangeDays: Int {
         rangeOptions.contains(rangeDays) ? rangeDays : 30
-    }
-
-    private var maxTokens: Int {
-        max(displayedPoints.map(\.totalTokens).max() ?? 0, 1)
     }
 
     private func barWidth(for count: Int, in availableWidth: Double) -> Double {
@@ -673,17 +693,21 @@ struct UsageTrendChartView: View {
         return min(maxBarWidth, availableBarWidth / Double(count))
     }
 
-    private func barHeight(for point: UsageTrendPoint, in availableHeight: Double) -> Double {
+    private func barHeight(
+        for point: UsageTrendPoint,
+        maxTokens: Int,
+        in availableHeight: Double
+    ) -> Double {
         let ratio = Double(point.totalTokens) / Double(maxTokens)
         return max(4, availableHeight * ratio)
     }
 
-    private func barColor(for point: UsageTrendPoint) -> Color {
+    private func barColor(for point: UsageTrendPoint, latestID: String?) -> Color {
         guard point.totalTokens > 0 else {
             return Color(nsColor: .quaternaryLabelColor).opacity(0.35)
         }
 
-        guard let latest = displayedPoints.last else {
+        guard let latestID else {
             return .accentColor.opacity(0.55)
         }
 
@@ -691,7 +715,7 @@ struct UsageTrendChartView: View {
             return .accentColor
         }
 
-        return point.id == latest.id ? .accentColor.opacity(0.8) : .accentColor.opacity(0.45)
+        return point.id == latestID ? .accentColor.opacity(0.8) : .accentColor.opacity(0.45)
     }
 
     private func dayText(for date: Date?) -> String {
@@ -814,7 +838,9 @@ private extension UsageHealth {
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    #if DEBUG
     @ObservedObject var viewModel: DashboardViewModel
+    #endif
     @ObservedObject var updateViewModel: UpdateCheckViewModel
     @ObservedObject var intelligenceCheckViewModel: CodexIntelligenceCheckViewModel
     #if DEBUG
@@ -825,6 +851,22 @@ struct SettingsView: View {
     #endif
     @State private var isResetConfirmationPresented = false
 
+    init(
+        settings: AppSettings,
+        viewModel: DashboardViewModel,
+        updateViewModel: UpdateCheckViewModel,
+        intelligenceCheckViewModel: CodexIntelligenceCheckViewModel
+    ) {
+        self.settings = settings
+        #if DEBUG
+        self.viewModel = viewModel
+        #else
+        _ = viewModel
+        #endif
+        self.updateViewModel = updateViewModel
+        self.intelligenceCheckViewModel = intelligenceCheckViewModel
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -833,7 +875,7 @@ struct SettingsView: View {
                 SettingsSection(
                     icon: "arrow.clockwise",
                     title: "刷新",
-                    subtitle: "控制状态栏和面板读取本地快照的频率。"
+                    subtitle: "控制状态栏额度与通知的刷新频率。"
                 ) {
                     RefreshIntervalControl(seconds: $settings.refreshIntervalSeconds)
                 }
@@ -1137,6 +1179,8 @@ struct LoginItemRows: View {
 
 @MainActor
 final class UpdateCheckViewModel: ObservableObject {
+    private static let presentedSurfaceCheckTTL: TimeInterval = 15 * 60
+
     @Published private(set) var result: UpdateCheckResult?
     @Published private(set) var errorMessage: String?
     @Published private(set) var isChecking = false
@@ -1147,6 +1191,7 @@ final class UpdateCheckViewModel: ObservableObject {
 
     private let checker = UpdateChecker()
     private let installer = UpdateInstaller()
+    private var lastCheckCompletedAt: Date?
 
     var isUpdateAvailable: Bool {
         result?.isUpdateAvailable == true
@@ -1170,6 +1215,11 @@ final class UpdateCheckViewModel: ObservableObject {
     }
 
     func checkForPresentedSurface() async {
+        if let lastCheckCompletedAt,
+           Date().timeIntervalSince(lastCheckCompletedAt) < Self.presentedSurfaceCheckTTL {
+            return
+        }
+
         await check()
     }
 
@@ -1177,16 +1227,19 @@ final class UpdateCheckViewModel: ObservableObject {
         guard !isChecking, !isInstalling else { return }
 
         isChecking = true
+        defer { isChecking = false }
         errorMessage = nil
         installMessage = nil
 
         do {
             result = try await checker.checkForUpdates()
         } catch {
+            guard !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
         }
 
-        isChecking = false
+        guard !Task.isCancelled else { return }
+        lastCheckCompletedAt = Date()
     }
 
     func openDownload() {

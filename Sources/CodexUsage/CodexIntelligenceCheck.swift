@@ -222,12 +222,13 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
         if case .updating = cliUpdateState { return }
 
         isPreparingEnvironment = true
+        defer { isPreparingEnvironment = false }
         await checkInstallation()
+        guard !Task.isCancelled else { return }
 
         guard let executablePath = installationState.executablePath else {
             cliUpdateState = .idle
             await reloadConfiguredDefaults(codexHomePath: codexHomePath, executablePath: nil)
-            isPreparingEnvironment = false
             return
         }
 
@@ -235,9 +236,9 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
 
         do {
             let update = try await cliUpdater.checkForUpdate(executablePath: executablePath)
+            try Task.checkCancellation()
             if update.isUpdateAvailable {
                 cliUpdateState = .updateAvailable(update)
-                isPreparingEnvironment = false
                 return
             }
 
@@ -245,6 +246,7 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
                 codexHomePath: codexHomePath,
                 executablePath: executablePath
             )
+            try Task.checkCancellation()
             if let modelListErrorMessage {
                 cliUpdateState = .failed(
                     currentVersion: update.currentVersion,
@@ -253,19 +255,21 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
             } else {
                 cliUpdateState = .current(update.currentVersion)
             }
+        } catch is CancellationError {
+            return
         } catch {
             let currentVersion = try? await cliUpdater.installedVersion(at: executablePath)
+            guard !Task.isCancelled else { return }
             await reloadConfiguredDefaults(
                 codexHomePath: codexHomePath,
                 executablePath: executablePath
             )
+            guard !Task.isCancelled else { return }
             cliUpdateState = .failed(
                 currentVersion: currentVersion,
                 message: error.localizedDescription
             )
         }
-
-        isPreparingEnvironment = false
     }
 
     func deferCLIUpdate(codexHomePath: String) {
@@ -373,6 +377,7 @@ final class CodexIntelligenceCheckViewModel: ObservableObject {
                 executablePath: executablePath
             )
         }.value
+        guard !Task.isCancelled else { return }
 
         detectedModelName = configuredDefaults.model
         detectedReasoningEffort = configuredDefaults.reasoningEffort
