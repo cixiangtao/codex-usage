@@ -34,6 +34,10 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(showStatusBarWindowLabels, forKey: Keys.showStatusBarWindowLabels) }
     }
 
+    @Published var statusBarIconStyle: StatusBarIconStyle {
+        didSet { defaults.set(statusBarIconStyle.rawValue, forKey: Keys.statusBarIconStyle) }
+    }
+
     @Published var usageTrendRangeDays: Int {
         didSet { defaults.set(usageTrendRangeDays, forKey: Keys.usageTrendRangeDays) }
     }
@@ -56,6 +60,9 @@ final class AppSettings: ObservableObject {
         showSecondaryWindowInStatusBar = defaults.object(forKey: Keys.showSecondaryWindowInStatusBar) as? Bool
             ?? (migratedMode != "primaryOnly")
         showStatusBarWindowLabels = defaults.object(forKey: Keys.showStatusBarWindowLabels) as? Bool ?? defaultValues.showStatusBarWindowLabels
+        statusBarIconStyle = defaults.string(forKey: Keys.statusBarIconStyle)
+            .flatMap(StatusBarIconStyle.init(rawValue:))
+            ?? defaultValues.statusBarIconStyle
         usageTrendRangeDays = defaults.object(forKey: Keys.usageTrendRangeDays) as? Int ?? defaultValues.usageTrendRangeDays
 
     }
@@ -72,6 +79,7 @@ final class AppSettings: ObservableObject {
         showPrimaryWindowInStatusBar = defaultValues.showPrimaryWindowInStatusBar
         showSecondaryWindowInStatusBar = defaultValues.showSecondaryWindowInStatusBar
         showStatusBarWindowLabels = defaultValues.showStatusBarWindowLabels
+        statusBarIconStyle = defaultValues.statusBarIconStyle
         usageTrendRangeDays = defaultValues.usageTrendRangeDays
     }
 
@@ -85,6 +93,7 @@ final class AppSettings: ObservableObject {
         static let showPrimaryWindowInStatusBar = "showPrimaryWindowInStatusBar"
         static let showSecondaryWindowInStatusBar = "showSecondaryWindowInStatusBar"
         static let showStatusBarWindowLabels = "showStatusBarWindowLabels"
+        static let statusBarIconStyle = "statusBarIconStyle"
         static let usageTrendRangeDays = "usageTrendRangeDays"
 
         static let all = [
@@ -97,6 +106,7 @@ final class AppSettings: ObservableObject {
             showPrimaryWindowInStatusBar,
             showSecondaryWindowInStatusBar,
             showStatusBarWindowLabels,
+            statusBarIconStyle,
             usageTrendRangeDays
         ]
     }
@@ -110,6 +120,7 @@ final class AppSettings: ObservableObject {
         var showPrimaryWindowInStatusBar: Bool
         var showSecondaryWindowInStatusBar: Bool
         var showStatusBarWindowLabels: Bool
+        var statusBarIconStyle: StatusBarIconStyle
         var usageTrendRangeDays: Int
 
         static var current: DefaultValues {
@@ -124,6 +135,7 @@ final class AppSettings: ObservableObject {
                 showPrimaryWindowInStatusBar: true,
                 showSecondaryWindowInStatusBar: true,
                 showStatusBarWindowLabels: true,
+                statusBarIconStyle: .adaptive,
                 usageTrendRangeDays: 30
             )
         }

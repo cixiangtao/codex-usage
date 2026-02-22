@@ -33,7 +33,8 @@ struct CodexUsageApp: App {
                 ),
                 showPrimary: settings.showPrimaryWindowInStatusBar,
                 showSecondary: settings.showSecondaryWindowInStatusBar,
-                showLabels: settings.showStatusBarWindowLabels
+                showLabels: settings.showStatusBarWindowLabels,
+                iconStyle: settings.statusBarIconStyle
             )
             .task {
                 viewModel.startAutoRefresh(settings: settings)
@@ -53,10 +54,11 @@ struct StatusBarLabel: View {
     var showPrimary: Bool
     var showSecondary: Bool
     var showLabels: Bool
+    var iconStyle: StatusBarIconStyle = .adaptive
 
     var body: some View {
         HStack(spacing: labelText.isEmpty ? 0 : 5) {
-            Image(systemName: iconName)
+            StatusBarIconView(style: iconStyle, health: health)
             if !labelText.isEmpty {
                 Text(labelText)
                     .monospacedDigit()
@@ -96,18 +98,6 @@ struct StatusBarLabel: View {
         return showLabels ? "\(window.displayName) \(percent)" : percent
     }
 
-    private var iconName: String {
-        switch health {
-        case .unavailable:
-            "bolt.trianglebadge.exclamationmark"
-        case .normal:
-            AppIcon.statusSymbolName
-        case .warning:
-            "bolt.badge.clock"
-        case .critical:
-            "exclamationmark.triangle"
-        }
-    }
 }
 
 struct MenuBarContent: View {
@@ -883,9 +873,11 @@ struct SettingsView: View {
                 SettingsSection(
                     icon: "menubar.rectangle",
                     title: "状态栏",
-                    subtitle: "选择状态栏里常驻展示的额度窗口和格式。"
+                    subtitle: "选择常驻展示的额度窗口、格式和内置图标。"
                 ) {
                     VStack(spacing: 10) {
+                        StatusBarIconPicker(selection: $settings.statusBarIconStyle)
+
                         ToggleRow(
                             title: CodexRateWindowKind.primary.settingsTitle,
                             subtitle: "例如 \(CodexRateWindowKind.primary.exampleText)",
@@ -983,7 +975,7 @@ struct SettingsView: View {
                             Text("恢复默认设置")
                                 .font(.callout.weight(.medium))
 
-                            Text("刷新、状态栏和通知偏好会恢复到初始状态")
+                            Text("刷新、状态栏图标和通知偏好会恢复到初始状态")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -1015,7 +1007,7 @@ struct SettingsView: View {
                 }
             }
         } message: {
-            Text("这会恢复刷新间隔、状态栏展示、通知阈值、图表范围和 Codex 路径设置。")
+            Text("这会恢复刷新间隔、状态栏图标与展示、通知阈值、图表范围和 Codex 路径设置。")
         }
         #if DEBUG
         .alert(debugNotificationAlertTitle, isPresented: $isDebugNotificationAlertPresented) {
