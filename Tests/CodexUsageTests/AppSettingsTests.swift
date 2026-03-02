@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import CodexUsage
 
@@ -36,5 +38,44 @@ struct AppSettingsTests {
         let settings = AppSettings(defaults: defaults)
 
         #expect(settings.statusBarIconStyle == .adaptive)
+    }
+
+    @Test("Every custom status bar icon produces a visible template image")
+    @MainActor
+    func customStatusBarIconsProduceVisibleTemplateImages() throws {
+        for style in StatusBarIconStyle.allCases where style != .adaptive {
+            for frame in [0, 1] {
+                let image = PixelStatusBarIconRenderer.image(style: style, frame: frame)
+                let tiffData = try #require(image.tiffRepresentation)
+                let bitmap = try #require(NSBitmapImageRep(data: tiffData))
+
+                #expect(image.isTemplate)
+                #expect(image.size == NSSize(width: 16, height: 16))
+                #expect(hasVisiblePixel(in: bitmap))
+
+                let renderedView = StatusBarIconView(
+                    style: style,
+                    health: .normal,
+                    animates: false
+                )
+                let renderedImage = try #require(ImageRenderer(content: renderedView).nsImage)
+                let renderedData = try #require(renderedImage.tiffRepresentation)
+                let renderedBitmap = try #require(NSBitmapImageRep(data: renderedData))
+
+                #expect(hasVisiblePixel(in: renderedBitmap))
+            }
+        }
+    }
+
+    private func hasVisiblePixel(in bitmap: NSBitmapImageRep) -> Bool {
+        for x in 0..<bitmap.pixelsWide {
+            for y in 0..<bitmap.pixelsHigh {
+                if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0 {
+                    return true
+                }
+            }
+        }
+
+        return false
     }
 }

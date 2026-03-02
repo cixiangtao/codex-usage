@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum StatusBarIconStyle: String, CaseIterable, Identifiable {
@@ -54,13 +55,13 @@ struct StatusBarIconView: View {
         case .pixelBot, .pixelSpark, .pixelPulse:
             if animates && !reduceMotion {
                 TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
-                    PixelStatusBarIcon(
+                    RasterizedPixelStatusBarIcon(
                         style: style,
                         frame: animationFrame(at: timeline.date)
                     )
                 }
             } else {
-                PixelStatusBarIcon(style: style, frame: 0)
+                RasterizedPixelStatusBarIcon(style: style, frame: 0)
             }
         }
     }
@@ -83,73 +84,118 @@ struct StatusBarIconView: View {
     }
 }
 
-private struct PixelStatusBarIcon: View {
+private struct RasterizedPixelStatusBarIcon: View {
     var style: StatusBarIconStyle
     var frame: Int
 
     var body: some View {
-        Canvas(opaque: false, rendersAsynchronously: false) { context, size in
-            let gridSize = 8
-            let pixelSize = floor(min(size.width, size.height) / CGFloat(gridSize))
+        Image(nsImage: PixelStatusBarIconRenderer.image(style: style, frame: frame))
+            .interpolation(.none)
+            .frame(width: 16, height: 16)
+            .accessibilityLabel(style.accessibilityLabel)
+    }
+}
+
+enum PixelStatusBarIconRenderer {
+    private static let gridSize = 8
+    private static let imageSize = NSSize(width: 16, height: 16)
+    @MainActor private static var cachedImages: [String: NSImage] = [:]
+
+    @MainActor
+    static func image(style: StatusBarIconStyle, frame: Int) -> NSImage {
+        let normalizedFrame = normalizedFrame(style: style, frame: frame)
+        let cacheKey = "\(style.rawValue)-\(normalizedFrame)"
+        if let cachedImage = cachedImages[cacheKey] {
+            return cachedImage
+        }
+
+        let image = NSImage(size: imageSize, flipped: true) { bounds in
+            let pixelSize = floor(min(bounds.width, bounds.height) / CGFloat(gridSize))
             let origin = CGPoint(
-                x: floor((size.width - pixelSize * CGFloat(gridSize)) / 2),
-                y: floor((size.height - pixelSize * CGFloat(gridSize)) / 2)
+                x: floor((bounds.width - pixelSize * CGFloat(gridSize)) / 2),
+                y: floor((bounds.height - pixelSize * CGFloat(gridSize)) / 2)
             )
 
-            func fill(_ pixels: [(Int, Int)], opacity: Double = 1) {
-                for (x, y) in pixels {
-                    let rect = CGRect(
-                        x: origin.x + CGFloat(x) * pixelSize,
-                        y: origin.y + CGFloat(y) * pixelSize,
-                        width: pixelSize,
-                        height: pixelSize
+            for layer in layers(style: style, frame: normalizedFrame) {
+                NSColor.black.withAlphaComponent(layer.opacity).setFill()
+                for (x, y) in layer.pixels {
+                    NSBezierPath(
+                        rect: NSRect(
+                            x: origin.x + CGFloat(x) * pixelSize,
+                            y: origin.y + CGFloat(y) * pixelSize,
+                            width: pixelSize,
+                            height: pixelSize
+                        )
                     )
-                    context.fill(
-                        Path(rect),
-                        with: .color(Color.primary.opacity(opacity))
-                    )
+                    .fill()
                 }
             }
 
-            switch style {
-            case .adaptive:
-                break
-            case .pixelBot:
-                fill([
+            return true
+        }
+        image.isTemplate = true
+        cachedImages[cacheKey] = image
+        return image
+    }
+
+    private static func normalizedFrame(style: StatusBarIconStyle, frame: Int) -> Int {
+        switch style {
+        case .adaptive:
+            0
+        case .pixelBot:
+            frame % 8 == 0 ? 0 : 1
+        case .pixelSpark, .pixelPulse:
+            frame.isMultiple(of: 2) ? 0 : 1
+        }
+    }
+
+    private static func layers(style: StatusBarIconStyle, frame: Int) -> [PixelLayer] {
+        switch style {
+        case .adaptive:
+            []
+        case .pixelBot:
+            [
+                PixelLayer(pixels: [
                     (2, 1), (3, 1), (4, 1), (5, 1),
                     (1, 2), (6, 2),
                     (1, 3), (6, 3),
                     (1, 4), (6, 4),
                     (1, 5), (6, 5),
                     (2, 6), (3, 6), (4, 6), (5, 6),
-                    (0, 3), (7, 3)
-                ])
-
-                let isBlinking = frame % 8 == 0
-                fill(isBlinking ? [(2, 4), (5, 4)] : [(2, 3), (5, 3)])
-                fill([(3, 5), (4, 5)])
-            case .pixelSpark:
-                let isExpanded = frame.isMultiple(of: 2)
-                fill([
+                    (0, 3), (7, 3),
+                    (3, 5), (4, 5)
+                ]),
+                PixelLayer(
+                    pixels: frame % 8 == 0
+                        ? [(2, 4), (5, 4)]
+                        : [(2, 3), (5, 3)]
+                )
+            ]
+        case .pixelSpark:
+            [
+                PixelLayer(pixels: [
                     (3, 0), (4, 0),
                     (3, 1), (4, 1),
                     (0, 3), (1, 3), (3, 3), (4, 3), (6, 3), (7, 3),
                     (0, 4), (1, 4), (3, 4), (4, 4), (6, 4), (7, 4),
                     (3, 6), (4, 6),
                     (3, 7), (4, 7)
-                ])
-                fill(
-                    isExpanded
-                        ? [(2, 2), (5, 2), (2, 5), (5, 5)]
-                        : [(3, 2), (4, 2), (2, 3), (5, 3), (2, 4), (5, 4), (3, 5), (4, 5)],
-                    opacity: isExpanded ? 0.6 : 1
-                )
-            case .pixelPulse:
-                let isExpanded = frame.isMultiple(of: 2)
-                fill([(3, 3), (4, 3), (3, 4), (4, 4)])
-
-                if isExpanded {
-                    fill([
+                ]),
+                frame.isMultiple(of: 2)
+                    ? PixelLayer(
+                        pixels: [(2, 2), (5, 2), (2, 5), (5, 5)],
+                        opacity: 0.6
+                    )
+                    : PixelLayer(pixels: [
+                        (3, 2), (4, 2), (2, 3), (5, 3),
+                        (2, 4), (5, 4), (3, 5), (4, 5)
+                    ])
+            ]
+        case .pixelPulse:
+            [
+                PixelLayer(pixels: [(3, 3), (4, 3), (3, 4), (4, 4)]),
+                frame.isMultiple(of: 2)
+                    ? PixelLayer(pixels: [
                         (2, 0), (3, 0), (4, 0), (5, 0),
                         (1, 1), (6, 1),
                         (0, 2), (7, 2),
@@ -159,18 +205,19 @@ private struct PixelStatusBarIcon: View {
                         (1, 6), (6, 6),
                         (2, 7), (3, 7), (4, 7), (5, 7)
                     ], opacity: 0.72)
-                } else {
-                    fill([
+                    : PixelLayer(pixels: [
                         (2, 2), (3, 2), (4, 2), (5, 2),
                         (2, 3), (5, 3),
                         (2, 4), (5, 4),
                         (2, 5), (3, 5), (4, 5), (5, 5)
                     ], opacity: 0.86)
-                }
-            }
+            ]
         }
-        .frame(width: 16, height: 16)
-        .accessibilityLabel(style.accessibilityLabel)
+    }
+
+    private struct PixelLayer {
+        var pixels: [(Int, Int)]
+        var opacity = 1.0
     }
 }
 
