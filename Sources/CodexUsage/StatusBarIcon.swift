@@ -43,7 +43,7 @@ enum StatusBarIconStyle: String, CaseIterable, Identifiable {
 struct StatusBarIconView: View {
     var style: StatusBarIconStyle
     var health: UsageHealth
-    var animates = true
+    var animates = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -240,7 +240,7 @@ struct StatusBarIconPicker: View {
                         selection = style
                     } label: {
                         HStack(spacing: 10) {
-                            StatusBarIconView(style: style, health: .normal)
+                            StatusBarIconView(style: style, health: .normal, animates: true)
                                 .frame(width: 28, height: 28)
                                 .background(
                                     Color.primary.opacity(0.06),
@@ -283,7 +283,7 @@ struct StatusBarIconPicker: View {
                 }
             }
 
-            Text("像素动画以每秒 2 帧低频刷新；开启“减少动态效果”时会自动静止。")
+            Text("设置页展示动画预览；状态栏使用静态像素帧，避免持续刷新影响性能。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

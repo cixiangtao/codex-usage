@@ -40,6 +40,20 @@ struct AppSettingsTests {
         #expect(settings.statusBarIconStyle == .adaptive)
     }
 
+    @Test("Status bar icons are static unless animation is explicitly requested")
+    @MainActor
+    func statusBarIconsDefaultToStaticRendering() {
+        let statusBarIcon = StatusBarIconView(style: .pixelPulse, health: .normal)
+        let settingsPreview = StatusBarIconView(
+            style: .pixelPulse,
+            health: .normal,
+            animates: true
+        )
+
+        #expect(statusBarIcon.animates == false)
+        #expect(settingsPreview.animates)
+    }
+
     @Test("Every custom status bar icon produces a visible template image")
     @MainActor
     func customStatusBarIconsProduceVisibleTemplateImages() throws {
