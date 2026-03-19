@@ -17,7 +17,19 @@ enum AppIcon {
     }
 
     private static func bundledIconImage() -> NSImage? {
-        guard let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+        if let image = iconImage(in: .main) {
+            return image
+        }
+
+        #if DEBUG
+        return iconImage(in: .module)
+        #else
+        return nil
+        #endif
+    }
+
+    private static func iconImage(in bundle: Bundle) -> NSImage? {
+        guard let url = bundle.url(forResource: "AppIcon", withExtension: "icns"),
               let image = NSImage(contentsOf: url) else {
             return nil
         }

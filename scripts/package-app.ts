@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { access, copyFile, cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
 
@@ -88,15 +88,6 @@ const capture = (command: string, args: string[]) =>
       reject(new Error(stderr.trim() || `${command} exited with code ${code ?? "unknown"}`));
     });
   });
-
-const pathExists = async (path: string) => {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const notaryAuthArguments = () => {
   if (notaryKeychainProfile) {
@@ -211,25 +202,23 @@ const packageApp = async () => {
 
   const binDir = await capture("swift", ["build", "-c", "release", "--show-bin-path"]);
   const executablePath = resolve(binDir, appName);
-  const resourceBundle = resolve(binDir, `${appName}_${appName}.bundle`);
   const appMacOSDir = resolve(appPath, "Contents", "MacOS");
   const appResourcesDir = resolve(appPath, "Contents", "Resources");
   const sourceIconPath = resolve(rootDir, "Sources", "CodexUsage", "Resources", "AppIcon.icns");
 
   await assertExecutable(executablePath);
+  try {
+    await access(sourceIconPath);
+  } catch {
+    fail(`application icon not found at ${sourceIconPath}`);
+  }
+
   await rm(appPath, { recursive: true, force: true });
   await mkdir(appMacOSDir, { recursive: true });
   await mkdir(appResourcesDir, { recursive: true });
 
   await copyFile(executablePath, resolve(appMacOSDir, appName));
-
-  if (await pathExists(resourceBundle)) {
-    await cp(resourceBundle, resolve(appResourcesDir, `${appName}_${appName}.bundle`), { recursive: true });
-  }
-
-  if (await pathExists(sourceIconPath)) {
-    await copyFile(sourceIconPath, resolve(appResourcesDir, "AppIcon.icns"));
-  }
+  await copyFile(sourceIconPath, resolve(appResourcesDir, "AppIcon.icns"));
 
   await writeFile(resolve(appPath, "Contents", "Info.plist"), infoPlist());
   await signApp();
