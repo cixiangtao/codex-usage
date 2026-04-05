@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 
 enum StatusBarIconStyle: String, CaseIterable, Identifiable {
@@ -41,29 +42,59 @@ enum StatusBarIconStyle: String, CaseIterable, Identifiable {
 }
 
 struct StatusBarIconView: View {
-    var style: StatusBarIconStyle
+    var descriptor: StatusBarIconDescriptor
     var health: UsageHealth
     var animates = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    init(
+        descriptor: StatusBarIconDescriptor,
+        health: UsageHealth,
+        animates: Bool = false
+    ) {
+        self.descriptor = descriptor
+        self.health = health
+        self.animates = animates
+    }
+
+    init(
+        style: StatusBarIconStyle,
+        health: UsageHealth,
+        animates: Bool = false
+    ) {
+        self.init(
+            descriptor: StatusBarIconCatalog.builtIns.first { $0.id == style.rawValue }
+                ?? StatusBarIconCatalog.builtIns[0],
+            health: health,
+            animates: animates
+        )
+    }
+
     var body: some View {
-        switch style {
+        switch descriptor.source {
         case .adaptive:
             Image(systemName: adaptiveSymbolName)
-                .accessibilityLabel(style.accessibilityLabel)
-        case .pixelBot, .pixelSpark, .pixelPulse:
-            if animates && !reduceMotion {
-                TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
-                    RasterizedPixelStatusBarIcon(
-                        style: style,
-                        frame: animationFrame(at: timeline.date)
-                    )
-                }
-            } else {
-                RasterizedPixelStatusBarIcon(style: style, frame: 0)
-            }
+                .accessibilityLabel(accessibilityLabel)
+        case let .pixel(style):
+            PixelStatusBarImageView(
+                style: style,
+                animates: animates && !reduceMotion
+            )
+            .frame(width: 16, height: 16)
+            .accessibilityLabel(accessibilityLabel)
+        case let .image(url):
+            AnimatedStatusBarImageView(
+                imageURL: url,
+                animates: animates && !reduceMotion
+            )
+            .frame(width: 22, height: 18)
+            .accessibilityLabel(accessibilityLabel)
         }
+    }
+
+    private var accessibilityLabel: String {
+        "Codex Usage，\(descriptor.title)"
     }
 
     private var adaptiveSymbolName: String {
@@ -79,20 +110,144 @@ struct StatusBarIconView: View {
         }
     }
 
-    private func animationFrame(at date: Date) -> Int {
-        Int(date.timeIntervalSinceReferenceDate * 2)
+}
+
+private struct PixelStatusBarImageView: NSViewRepresentable {
+    var style: StatusBarIconStyle
+    var animates: Bool
+
+    func makeNSView(context: Context) -> PixelAnimationImageView {
+        let imageView = PixelAnimationImageView()
+        imageView.imageScaling = .scaleNone
+        return imageView
+    }
+
+    func updateNSView(_ imageView: PixelAnimationImageView, context: Context) {
+        imageView.configure(style: style, animates: animates)
+    }
+
+    static func dismantleNSView(_ imageView: PixelAnimationImageView, coordinator: ()) {
+        imageView.stopAnimating()
     }
 }
 
-private struct RasterizedPixelStatusBarIcon: View {
-    var style: StatusBarIconStyle
-    var frame: Int
+@MainActor
+private final class PixelAnimationImageView: NSImageView {
+    private var animationTimer: Timer?
+    private var currentStyle: StatusBarIconStyle?
+    private var currentFrame = 0
 
-    var body: some View {
-        Image(nsImage: PixelStatusBarIconRenderer.image(style: style, frame: frame))
-            .interpolation(.none)
-            .frame(width: 16, height: 16)
-            .accessibilityLabel(style.accessibilityLabel)
+    func configure(style: StatusBarIconStyle, animates: Bool) {
+        if currentStyle != style {
+            currentStyle = style
+            currentFrame = 0
+            image = PixelStatusBarIconRenderer.image(style: style, frame: currentFrame)
+        }
+
+        guard animates else {
+            stopAnimating()
+            currentFrame = 0
+            image = PixelStatusBarIconRenderer.image(style: style, frame: 0)
+            return
+        }
+
+        guard animationTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let currentStyle = self.currentStyle else { return }
+                self.currentFrame += 1
+                self.image = PixelStatusBarIconRenderer.image(
+                    style: currentStyle,
+                    frame: self.currentFrame
+                )
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
+    }
+
+    func stopAnimating() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+    }
+
+}
+
+private struct AnimatedStatusBarImageView: NSViewRepresentable {
+    var imageURL: URL
+    var animates: Bool
+
+    func makeNSView(context: Context) -> AnimatedImageView {
+        let imageView = AnimatedImageView()
+        imageView.imageAlignment = .alignCenter
+        imageView.imageFrameStyle = .none
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        return imageView
+    }
+
+    func updateNSView(_ imageView: AnimatedImageView, context: Context) {
+        imageView.configure(imageURL: imageURL, animates: animates)
+    }
+}
+
+@MainActor
+private final class AnimatedImageView: NSImageView {
+    private var currentURL: URL?
+    private var currentlyAnimates: Bool?
+
+    func configure(imageURL: URL, animates: Bool) {
+        if currentURL != imageURL || currentlyAnimates != animates {
+            currentURL = imageURL
+            currentlyAnimates = animates
+            image = animates
+                ? StatusBarImageCache.animatedImage(at: imageURL)
+                : StatusBarImageCache.thumbnail(at: imageURL)
+        }
+        self.animates = animates
+    }
+}
+
+@MainActor
+private enum StatusBarImageCache {
+    private static var animatedImages: [URL: NSImage] = [:]
+    private static var thumbnails: [URL: NSImage] = [:]
+
+    static func animatedImage(at url: URL) -> NSImage? {
+        if let image = animatedImages[url] {
+            return image
+        }
+
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        animatedImages[url] = image
+        return image
+    }
+
+    static func thumbnail(at url: URL) -> NSImage? {
+        if let image = thumbnails[url] {
+            return image
+        }
+
+        guard
+            let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+            let cgImage = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 64
+                ] as CFDictionary
+            )
+        else {
+            return nil
+        }
+
+        let image = NSImage(
+            cgImage: cgImage,
+            size: NSSize(width: cgImage.width, height: cgImage.height)
+        )
+        thumbnails[url] = image
+        return image
     }
 }
 
@@ -218,76 +373,5 @@ enum PixelStatusBarIconRenderer {
     private struct PixelLayer {
         var pixels: [(Int, Int)]
         var opacity = 1.0
-    }
-}
-
-struct StatusBarIconPicker: View {
-    @Binding var selection: StatusBarIconStyle
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 8),
-        GridItem(.flexible(), spacing: 8)
-    ]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("状态栏图标")
-                .font(.callout.weight(.medium))
-
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(StatusBarIconStyle.allCases) { style in
-                    Button {
-                        selection = style
-                    } label: {
-                        HStack(spacing: 10) {
-                            StatusBarIconView(style: style, health: .normal, animates: true)
-                                .frame(width: 28, height: 28)
-                                .background(
-                                    Color.primary.opacity(0.06),
-                                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                )
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(style.title)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.primary)
-
-                                Text(style.subtitle)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-
-                            Spacer(minLength: 0)
-
-                            Image(systemName: selection == style ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(selection == style ? Color.accentColor : Color.secondary.opacity(0.45))
-                        }
-                        .padding(8)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .background(
-                        selection == style ? Color.accentColor.opacity(0.1) : Color(nsColor: .windowBackgroundColor),
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(
-                                selection == style ? Color.accentColor.opacity(0.7) : Color.clear,
-                                lineWidth: 1
-                            )
-                    )
-                    .accessibilityLabel("\(style.title)，\(style.subtitle)")
-                    .accessibilityAddTraits(selection == style ? .isSelected : [])
-                }
-            }
-
-            Text("设置页展示动画预览；状态栏使用静态像素帧，避免持续刷新影响性能。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(10)
-        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

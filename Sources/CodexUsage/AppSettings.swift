@@ -34,8 +34,20 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(showStatusBarWindowLabels, forKey: Keys.showStatusBarWindowLabels) }
     }
 
-    @Published var statusBarIconStyle: StatusBarIconStyle {
-        didSet { defaults.set(statusBarIconStyle.rawValue, forKey: Keys.statusBarIconStyle) }
+    @Published var statusBarIconID: String {
+        didSet { defaults.set(statusBarIconID, forKey: Keys.statusBarIconID) }
+    }
+
+    @Published var animateStatusBarIcon: Bool {
+        didSet { defaults.set(animateStatusBarIcon, forKey: Keys.animateStatusBarIcon) }
+    }
+
+    @Published var customStatusBarIcons: [CustomStatusBarIcon] {
+        didSet {
+            if let data = try? JSONEncoder().encode(customStatusBarIcons) {
+                defaults.set(data, forKey: Keys.customStatusBarIcons)
+            }
+        }
     }
 
     @Published var usageTrendRangeDays: Int {
@@ -43,9 +55,16 @@ final class AppSettings: ObservableObject {
     }
 
     private let defaults: UserDefaults
+    let customIconDirectory: URL
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        customIconDirectory: URL? = nil
+    ) {
         self.defaults = defaults
+        self.customIconDirectory = customIconDirectory
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("CodexUsage/StatusBarIcons", isDirectory: true)
         let defaultValues = DefaultValues.current
 
         codexHomePath = defaults.string(forKey: Keys.codexHomePath) ?? defaultValues.codexHomePath
@@ -60,14 +79,55 @@ final class AppSettings: ObservableObject {
         showSecondaryWindowInStatusBar = defaults.object(forKey: Keys.showSecondaryWindowInStatusBar) as? Bool
             ?? (migratedMode != "primaryOnly")
         showStatusBarWindowLabels = defaults.object(forKey: Keys.showStatusBarWindowLabels) as? Bool ?? defaultValues.showStatusBarWindowLabels
-        statusBarIconStyle = defaults.string(forKey: Keys.statusBarIconStyle)
-            .flatMap(StatusBarIconStyle.init(rawValue:))
-            ?? defaultValues.statusBarIconStyle
+        let legacyIconID = defaults.string(forKey: Keys.statusBarIconStyle)
+        statusBarIconID = defaults.string(forKey: Keys.statusBarIconID)
+            ?? legacyIconID
+            ?? defaultValues.statusBarIconID
+        animateStatusBarIcon = defaults.object(forKey: Keys.animateStatusBarIcon) as? Bool
+            ?? defaultValues.animateStatusBarIcon
+        customStatusBarIcons = defaults.data(forKey: Keys.customStatusBarIcons)
+            .flatMap { try? JSONDecoder().decode([CustomStatusBarIcon].self, from: $0) }
+            ?? []
         usageTrendRangeDays = defaults.object(forKey: Keys.usageTrendRangeDays) as? Int ?? defaultValues.usageTrendRangeDays
 
     }
 
+    var statusBarIconStyle: StatusBarIconStyle {
+        get { StatusBarIconStyle(rawValue: statusBarIconID) ?? .adaptive }
+        set { statusBarIconID = newValue.rawValue }
+    }
+
+    var selectedStatusBarIcon: StatusBarIconDescriptor {
+        StatusBarIconCatalog.descriptor(
+            id: statusBarIconID,
+            customIcons: customStatusBarIcons,
+            customIconDirectory: customIconDirectory
+        )
+    }
+
+    @discardableResult
+    func importStatusBarIcon(from sourceURL: URL) throws -> CustomStatusBarIcon {
+        let icon = try CustomStatusBarIconStore.importIcon(
+            from: sourceURL,
+            into: customIconDirectory
+        )
+        customStatusBarIcons.append(icon)
+        statusBarIconID = icon.catalogID
+        return icon
+    }
+
+    func removeStatusBarIcon(_ icon: CustomStatusBarIcon) throws {
+        try CustomStatusBarIconStore.remove(icon, from: customIconDirectory)
+        customStatusBarIcons.removeAll { $0.id == icon.id }
+        if statusBarIconID == icon.catalogID {
+            statusBarIconID = StatusBarIconCatalog.defaultID
+        }
+    }
+
     func reset() {
+        for icon in customStatusBarIcons {
+            try? CustomStatusBarIconStore.remove(icon, from: customIconDirectory)
+        }
         Keys.all.forEach { defaults.removeObject(forKey: $0) }
 
         let defaultValues = DefaultValues.current
@@ -79,7 +139,9 @@ final class AppSettings: ObservableObject {
         showPrimaryWindowInStatusBar = defaultValues.showPrimaryWindowInStatusBar
         showSecondaryWindowInStatusBar = defaultValues.showSecondaryWindowInStatusBar
         showStatusBarWindowLabels = defaultValues.showStatusBarWindowLabels
-        statusBarIconStyle = defaultValues.statusBarIconStyle
+        statusBarIconID = defaultValues.statusBarIconID
+        animateStatusBarIcon = defaultValues.animateStatusBarIcon
+        customStatusBarIcons = []
         usageTrendRangeDays = defaultValues.usageTrendRangeDays
     }
 
@@ -94,6 +156,9 @@ final class AppSettings: ObservableObject {
         static let showSecondaryWindowInStatusBar = "showSecondaryWindowInStatusBar"
         static let showStatusBarWindowLabels = "showStatusBarWindowLabels"
         static let statusBarIconStyle = "statusBarIconStyle"
+        static let statusBarIconID = "statusBarIconID"
+        static let animateStatusBarIcon = "animateStatusBarIcon"
+        static let customStatusBarIcons = "customStatusBarIcons"
         static let usageTrendRangeDays = "usageTrendRangeDays"
 
         static let all = [
@@ -107,6 +172,9 @@ final class AppSettings: ObservableObject {
             showSecondaryWindowInStatusBar,
             showStatusBarWindowLabels,
             statusBarIconStyle,
+            statusBarIconID,
+            animateStatusBarIcon,
+            customStatusBarIcons,
             usageTrendRangeDays
         ]
     }
@@ -120,7 +188,8 @@ final class AppSettings: ObservableObject {
         var showPrimaryWindowInStatusBar: Bool
         var showSecondaryWindowInStatusBar: Bool
         var showStatusBarWindowLabels: Bool
-        var statusBarIconStyle: StatusBarIconStyle
+        var statusBarIconID: String
+        var animateStatusBarIcon: Bool
         var usageTrendRangeDays: Int
 
         static var current: DefaultValues {
@@ -135,7 +204,8 @@ final class AppSettings: ObservableObject {
                 showPrimaryWindowInStatusBar: true,
                 showSecondaryWindowInStatusBar: true,
                 showStatusBarWindowLabels: true,
-                statusBarIconStyle: .adaptive,
+                statusBarIconID: StatusBarIconCatalog.defaultID,
+                animateStatusBarIcon: true,
                 usageTrendRangeDays: 30
             )
         }

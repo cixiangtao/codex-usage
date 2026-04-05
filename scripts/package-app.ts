@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { access, copyFile, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
 
@@ -205,12 +205,19 @@ const packageApp = async () => {
   const appMacOSDir = resolve(appPath, "Contents", "MacOS");
   const appResourcesDir = resolve(appPath, "Contents", "Resources");
   const sourceIconPath = resolve(rootDir, "Sources", "CodexUsage", "Resources", "AppIcon.icns");
+  const resourceBundleName = "CodexUsage_CodexUsage.bundle";
+  const resourceBundlePath = resolve(binDir, resourceBundleName);
 
   await assertExecutable(executablePath);
   try {
     await access(sourceIconPath);
   } catch {
     fail(`application icon not found at ${sourceIconPath}`);
+  }
+  try {
+    await access(resourceBundlePath);
+  } catch {
+    fail(`Swift resource bundle not found at ${resourceBundlePath}`);
   }
 
   await rm(appPath, { recursive: true, force: true });
@@ -219,6 +226,11 @@ const packageApp = async () => {
 
   await copyFile(executablePath, resolve(appMacOSDir, appName));
   await copyFile(sourceIconPath, resolve(appResourcesDir, "AppIcon.icns"));
+  await cp(
+    resourceBundlePath,
+    resolve(appResourcesDir, resourceBundleName),
+    { recursive: true },
+  );
 
   await writeFile(resolve(appPath, "Contents", "Info.plist"), infoPlist());
   await signApp();

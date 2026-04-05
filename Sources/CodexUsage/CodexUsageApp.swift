@@ -34,7 +34,8 @@ struct CodexUsageApp: App {
                 showPrimary: settings.showPrimaryWindowInStatusBar,
                 showSecondary: settings.showSecondaryWindowInStatusBar,
                 showLabels: settings.showStatusBarWindowLabels,
-                iconStyle: settings.statusBarIconStyle
+                icon: settings.selectedStatusBarIcon,
+                animatesIcon: settings.animateStatusBarIcon
             )
             .task {
                 viewModel.startAutoRefresh(settings: settings)
@@ -54,11 +55,16 @@ struct StatusBarLabel: View {
     var showPrimary: Bool
     var showSecondary: Bool
     var showLabels: Bool
-    var iconStyle: StatusBarIconStyle = .adaptive
+    var icon: StatusBarIconDescriptor = StatusBarIconCatalog.builtIns[0]
+    var animatesIcon = true
 
     var body: some View {
         HStack(spacing: labelText.isEmpty ? 0 : 5) {
-            StatusBarIconView(style: iconStyle, health: health)
+            StatusBarIconView(
+                descriptor: icon,
+                health: health,
+                animates: animatesIcon
+            )
             if !labelText.isEmpty {
                 Text(labelText)
                     .monospacedDigit()

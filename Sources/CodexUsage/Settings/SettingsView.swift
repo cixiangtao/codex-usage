@@ -35,7 +35,7 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 360)
+            .frame(width: 500)
             .padding(.vertical, 12)
             .accessibilityLabel("设置分类")
 
@@ -51,6 +51,10 @@ struct SettingsView: View {
         switch selectedTab {
         case .general:
             GeneralSettingsTab(settings: settings)
+        case .statusBar:
+            StatusBarSettingsTab(settings: settings)
+        case .icons:
+            IconSettingsTab(settings: settings)
         case .notifications:
             notificationTab
         case .intelligence:
@@ -78,6 +82,8 @@ struct SettingsView: View {
 
 private enum SettingsTab: String, CaseIterable, Identifiable {
     case general
+    case statusBar
+    case icons
     case notifications
     case intelligence
     case maintenance
@@ -88,6 +94,10 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general:
             "常规"
+        case .statusBar:
+            "状态栏"
+        case .icons:
+            "图标"
         case .notifications:
             "通知"
         case .intelligence:
