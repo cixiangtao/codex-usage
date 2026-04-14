@@ -110,7 +110,7 @@ struct IconSettingsTab: View {
             Button {
                 settings.statusBarIconID = icon.catalogID
             } label: {
-                HStack(spacing: 10) {
+                HStack(spacing: 7) {
                     iconPreview(descriptor)
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -128,7 +128,7 @@ struct IconSettingsTab: View {
 
                     selectionIndicator(isSelected: settings.statusBarIconID == icon.catalogID)
                 }
-                .padding(8)
+                .padding(6)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -186,10 +186,10 @@ struct IconSettingsTab: View {
             animates: settings.animateStatusBarIcon
                 && settings.statusBarIconID == descriptor.id
         )
-        .frame(width: 30, height: 28)
+        .frame(width: 22, height: 20)
         .background(
             Color.primary.opacity(0.06),
-            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
         )
     }
 
@@ -207,16 +207,16 @@ private struct StatusBarIconChoice: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: 7) {
                 StatusBarIconView(
                     descriptor: descriptor,
                     health: .normal,
                     animates: animates && isSelected
                 )
-                .frame(width: 30, height: 28)
+                .frame(width: 22, height: 20)
                 .background(
                     Color.primary.opacity(0.06),
-                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    in: RoundedRectangle(cornerRadius: 5, style: .continuous)
                 )
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -236,7 +236,7 @@ private struct StatusBarIconChoice: View {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary.opacity(0.45))
             }
-            .padding(8)
+            .padding(6)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

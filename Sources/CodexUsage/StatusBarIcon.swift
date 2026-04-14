@@ -81,14 +81,14 @@ struct StatusBarIconView: View {
                 style: style,
                 animates: animates && !reduceMotion
             )
-            .frame(width: 16, height: 16)
+            .frame(width: 14, height: 14)
             .accessibilityLabel(accessibilityLabel)
         case let .image(url):
             AnimatedStatusBarImageView(
                 imageURL: url,
                 animates: animates && !reduceMotion
             )
-            .frame(width: 22, height: 18)
+            .frame(width: 18, height: 16)
             .accessibilityLabel(accessibilityLabel)
         }
     }
@@ -118,7 +118,7 @@ private struct PixelStatusBarImageView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PixelAnimationImageView {
         let imageView = PixelAnimationImageView()
-        imageView.imageScaling = .scaleNone
+        imageView.imageScaling = .scaleProportionallyDown
         return imageView
     }
 

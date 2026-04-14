@@ -92,6 +92,31 @@ struct AppSettingsTests {
         }
     }
 
+    @Test("Native status item always receives a visible image")
+    @MainActor
+    func nativeStatusItemHasVisibleImage() throws {
+        let suiteName = "CodexUsageTests.StatusItem.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettings(defaults: defaults)
+        settings.statusBarIconID = "builtin.big_mouse_frog"
+        let controller = StatusBarController(
+            settings: settings,
+            viewModel: DashboardViewModel(),
+            updateViewModel: UpdateCheckViewModel()
+        )
+        defer { controller.shutdown() }
+
+        let image = try #require(controller.statusItem.button?.image)
+
+        #expect(image.size.width <= 18)
+        #expect(image.size.height <= 18)
+        #expect(image.size.width > 0)
+        #expect(image.size.height > 0)
+    }
+
     @Test("Custom status bar images are copied, selected, persisted, and removed")
     @MainActor
     func customStatusBarImageLifecycle() throws {

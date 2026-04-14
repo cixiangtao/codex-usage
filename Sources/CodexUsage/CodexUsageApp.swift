@@ -1,9 +1,34 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
 final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
+    private let settings = AppSettings()
+    private let viewModel = DashboardViewModel()
+    private let updateViewModel = UpdateCheckViewModel()
+    private var statusBarController: StatusBarController?
+    private var cancellables: Set<AnyCancellable> = []
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        statusBarController = StatusBarController(
+            settings: settings,
+            viewModel: viewModel,
+            updateViewModel: updateViewModel
+        )
+        viewModel.startAutoRefresh(settings: settings)
+
+        settings.$refreshIntervalSeconds
+            .dropFirst()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                viewModel.startAutoRefresh(settings: settings)
+            }
+            .store(in: &cancellables)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        statusBarController?.shutdown()
         SettingsWindowPresenter.shared.cancelIntelligenceCheck()
     }
 }
@@ -11,41 +36,15 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct CodexUsageApp: App {
     @NSApplicationDelegateAdaptor(CodexUsageAppDelegate.self) private var appDelegate
-    @StateObject private var settings = AppSettings()
-    @StateObject private var viewModel = DashboardViewModel()
-    @StateObject private var updateViewModel = UpdateCheckViewModel()
 
     init() {
         AppIcon.installApplicationIcon()
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuBarContent(viewModel: viewModel, settings: settings, updateViewModel: updateViewModel)
-                .frame(width: 360)
-        } label: {
-            StatusBarLabel(
-                snapshot: viewModel.snapshot,
-                health: UsageHealth.evaluate(
-                    snapshot: viewModel.snapshot,
-                    warning: settings.warningThresholdPercent,
-                    critical: settings.criticalThresholdPercent
-                ),
-                showPrimary: settings.showPrimaryWindowInStatusBar,
-                showSecondary: settings.showSecondaryWindowInStatusBar,
-                showLabels: settings.showStatusBarWindowLabels,
-                icon: settings.selectedStatusBarIcon,
-                animatesIcon: settings.animateStatusBarIcon
-            )
-            .task {
-                viewModel.startAutoRefresh(settings: settings)
-            }
-            .onChange(of: settings.refreshIntervalSeconds) {
-                viewModel.startAutoRefresh(settings: settings)
-            }
+        Settings {
+            EmptyView()
         }
-        .menuBarExtraStyle(.window)
-
     }
 }
 
@@ -210,6 +209,10 @@ struct MenuBarContent: View {
     private var footer: some View {
         HStack(spacing: 8) {
             Button {
+                NotificationCenter.default.post(
+                    name: .closeCodexUsageStatusPopover,
+                    object: nil
+                )
                 SettingsWindowPresenter.shared.show(
                     settings: settings,
                     viewModel: viewModel,
