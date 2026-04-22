@@ -92,29 +92,58 @@ struct AppSettingsTests {
         }
     }
 
-    @Test("Native status item always receives a visible image")
+    @Test("Every animated preview frame stays within menu bar dimensions")
     @MainActor
-    func nativeStatusItemHasVisibleImage() throws {
-        let suiteName = "CodexUsageTests.StatusItem.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let settings = AppSettings(defaults: defaults)
-        settings.statusBarIconID = "builtin.big_mouse_frog"
-        let controller = StatusBarController(
-            settings: settings,
-            viewModel: DashboardViewModel(),
-            updateViewModel: UpdateCheckViewModel()
+    func animatedPreviewFramesAreBounded() throws {
+        let descriptor = try #require(
+            StatusBarIconCatalog.builtIns.first {
+                $0.id == "builtin.big_mouse_frog"
+            }
         )
-        defer { controller.shutdown() }
+        let url = try #require(StatusBarIconCatalog.resourceURL(for: descriptor))
+        let animation = try #require(StatusBarAnimationLoader.animation(at: url))
 
-        let image = try #require(controller.statusItem.button?.image)
+        #expect(animation.frames.count > 1)
+        #expect(
+            animation.frames.allSatisfy {
+                $0.size.width > 0
+                    && $0.size.height > 0
+                    && $0.size.width <= 18
+                    && $0.size.height <= 18
+            }
+        )
+    }
 
-        #expect(image.size.width <= 18)
-        #expect(image.size.height <= 18)
-        #expect(image.size.width > 0)
-        #expect(image.size.height > 0)
+    @Test("Dark monochrome animations use adaptive template rendering")
+    @MainActor
+    func monochromeAnimationsAdaptToMenuBarContrast() throws {
+        let monochromeDescriptor = try #require(
+            StatusBarIconCatalog.builtIns.first {
+                $0.id == "builtin.zhiyin"
+            }
+        )
+        let colorDescriptor = try #require(
+            StatusBarIconCatalog.builtIns.first {
+                $0.id == "builtin.mongmong"
+            }
+        )
+        let monochromeURL = try #require(
+            StatusBarIconCatalog.resourceURL(for: monochromeDescriptor)
+        )
+        let colorURL = try #require(
+            StatusBarIconCatalog.resourceURL(for: colorDescriptor)
+        )
+        let monochromeAnimation = try #require(
+            StatusBarAnimationLoader.animation(at: monochromeURL)
+        )
+        let colorAnimation = try #require(
+            StatusBarAnimationLoader.animation(at: colorURL)
+        )
+
+        #expect(monochromeAnimation.usesTemplateRendering)
+        #expect(monochromeAnimation.frames.allSatisfy { $0.isTemplate })
+        #expect(colorAnimation.usesTemplateRendering == false)
+        #expect(colorAnimation.frames.allSatisfy { !$0.isTemplate })
     }
 
     @Test("Custom status bar images are copied, selected, persisted, and removed")

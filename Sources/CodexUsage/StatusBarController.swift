@@ -235,6 +235,7 @@ final class StatusBarController: NSObject {
 struct StatusBarAnimation: @unchecked Sendable {
     let frames: [NSImage]
     let durations: [TimeInterval]
+    let usesTemplateRendering: Bool
 }
 
 @MainActor
@@ -252,6 +253,7 @@ enum StatusBarAnimationLoader {
 
         var frames: [NSImage] = []
         var durations: [TimeInterval] = []
+        var contrastSamples = StatusBarContrastSamples()
 
         for index in 0..<CGImageSourceGetCount(source) {
             guard
@@ -268,12 +270,21 @@ enum StatusBarAnimationLoader {
                 continue
             }
 
+            if index < 8 {
+                contrastSamples.add(cgImage)
+            }
             frames.append(statusBarImage(from: cgImage))
             durations.append(frameDuration(source: source, index: index))
         }
 
         guard !frames.isEmpty else { return nil }
-        let animation = StatusBarAnimation(frames: frames, durations: durations)
+        let usesTemplateRendering = contrastSamples.prefersTemplateRendering
+        frames.forEach { $0.isTemplate = usesTemplateRendering }
+        let animation = StatusBarAnimation(
+            frames: frames,
+            durations: durations,
+            usesTemplateRendering: usesTemplateRendering
+        )
         cache[url] = animation
         return animation
     }
@@ -288,7 +299,6 @@ enum StatusBarAnimationLoader {
                 height: max(1, floor(sourceSize.height * scale))
             )
         )
-        image.isTemplate = false
         return image
     }
 
@@ -307,6 +317,83 @@ enum StatusBarAnimationLoader {
         let unclamped = gif[kCGImagePropertyGIFUnclampedDelayTime] as? NSNumber
         let clamped = gif[kCGImagePropertyGIFDelayTime] as? NSNumber
         return max(unclamped?.doubleValue ?? clamped?.doubleValue ?? 0.1, 0.02)
+    }
+}
+
+private struct StatusBarContrastSamples {
+    private var visiblePixelCount = 0
+    private var darkPixelCount = 0
+    private var colorfulPixelCount = 0
+    private var totalLuminance = 0.0
+
+    var prefersTemplateRendering: Bool {
+        guard visiblePixelCount >= 12 else { return false }
+
+        let visibleCount = Double(visiblePixelCount)
+        let darkFraction = Double(darkPixelCount) / visibleCount
+        let colorfulFraction = Double(colorfulPixelCount) / visibleCount
+        let averageLuminance = totalLuminance / visibleCount
+
+        return darkFraction >= 0.62
+            && colorfulFraction <= 0.12
+            && averageLuminance <= 0.42
+    }
+
+    mutating func add(_ image: CGImage) {
+        let sampleWidth = min(image.width, 24)
+        let sampleHeight = min(image.height, 24)
+        guard sampleWidth > 0, sampleHeight > 0 else { return }
+
+        var pixels = [UInt8](
+            repeating: 0,
+            count: sampleWidth * sampleHeight * 4
+        )
+        let bytesPerRow = sampleWidth * 4
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+            | CGBitmapInfo.byteOrder32Big.rawValue
+
+        let drewImage = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: sampleWidth,
+                height: sampleHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: colorSpace,
+                bitmapInfo: bitmapInfo
+            ) else {
+                return false
+            }
+
+            context.interpolationQuality = .medium
+            context.draw(
+                image,
+                in: CGRect(x: 0, y: 0, width: sampleWidth, height: sampleHeight)
+            )
+            return true
+        }
+        guard drewImage else { return }
+
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            let alpha = pixels[offset + 3]
+            guard alpha >= 32 else { continue }
+
+            let red = Double(pixels[offset]) / 255
+            let green = Double(pixels[offset + 1]) / 255
+            let blue = Double(pixels[offset + 2]) / 255
+            let luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722
+            let chroma = max(red, green, blue) - min(red, green, blue)
+
+            visiblePixelCount += 1
+            totalLuminance += luminance
+            if luminance <= 0.45 {
+                darkPixelCount += 1
+            }
+            if chroma >= 0.18 {
+                colorfulPixelCount += 1
+            }
+        }
     }
 }
 

@@ -1,5 +1,4 @@
 import AppKit
-import ImageIO
 import SwiftUI
 
 enum StatusBarIconStyle: String, CaseIterable, Identifiable {
@@ -137,6 +136,10 @@ private final class PixelAnimationImageView: NSImageView {
     private var currentStyle: StatusBarIconStyle?
     private var currentFrame = 0
 
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 14, height: 14)
+    }
+
     func configure(style: StatusBarIconStyle, animates: Bool) {
         if currentStyle != style {
             currentStyle = style
@@ -181,73 +184,71 @@ private struct AnimatedStatusBarImageView: NSViewRepresentable {
         let imageView = AnimatedImageView()
         imageView.imageAlignment = .alignCenter
         imageView.imageFrameStyle = .none
-        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.imageScaling = .scaleProportionallyDown
+        imageView.contentTintColor = .labelColor
+        imageView.wantsLayer = true
+        imageView.layer?.masksToBounds = true
         return imageView
     }
 
     func updateNSView(_ imageView: AnimatedImageView, context: Context) {
         imageView.configure(imageURL: imageURL, animates: animates)
     }
+
+    static func dismantleNSView(_ imageView: AnimatedImageView, coordinator: ()) {
+        imageView.stopAnimating()
+    }
 }
 
 @MainActor
 private final class AnimatedImageView: NSImageView {
+    private var animationTimer: Timer?
     private var currentURL: URL?
     private var currentlyAnimates: Bool?
 
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 18, height: 16)
+    }
+
     func configure(imageURL: URL, animates: Bool) {
-        if currentURL != imageURL || currentlyAnimates != animates {
-            currentURL = imageURL
-            currentlyAnimates = animates
-            image = animates
-                ? StatusBarImageCache.animatedImage(at: imageURL)
-                : StatusBarImageCache.thumbnail(at: imageURL)
-        }
-        self.animates = animates
-    }
-}
+        guard currentURL != imageURL || currentlyAnimates != animates else { return }
 
-@MainActor
-private enum StatusBarImageCache {
-    private static var animatedImages: [URL: NSImage] = [:]
-    private static var thumbnails: [URL: NSImage] = [:]
+        currentURL = imageURL
+        currentlyAnimates = animates
+        stopAnimating()
 
-    static func animatedImage(at url: URL) -> NSImage? {
-        if let image = animatedImages[url] {
-            return image
+        guard let animation = StatusBarAnimationLoader.animation(at: imageURL) else {
+            image = nil
+            return
         }
 
-        guard let image = NSImage(contentsOf: url) else { return nil }
-        animatedImages[url] = image
-        return image
+        image = animation.frames[0]
+        guard animates, animation.frames.count > 1 else { return }
+        scheduleFrame(animation, index: 1)
     }
 
-    static func thumbnail(at url: URL) -> NSImage? {
-        if let image = thumbnails[url] {
-            return image
-        }
+    func stopAnimating() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+    }
 
-        guard
-            let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-            let cgImage = CGImageSourceCreateThumbnailAtIndex(
-                source,
-                0,
-                [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: 64
-                ] as CFDictionary
-            )
-        else {
-            return nil
+    private func scheduleFrame(_ animation: StatusBarAnimation, index: Int) {
+        let previousIndex = index == 0 ? animation.frames.count - 1 : index - 1
+        let timer = Timer(
+            timeInterval: animation.durations[previousIndex],
+            repeats: false
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.image = animation.frames[index]
+                self.scheduleFrame(
+                    animation,
+                    index: (index + 1) % animation.frames.count
+                )
+            }
         }
-
-        let image = NSImage(
-            cgImage: cgImage,
-            size: NSSize(width: cgImage.width, height: cgImage.height)
-        )
-        thumbnails[url] = image
-        return image
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
     }
 }
 
