@@ -42,6 +42,15 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(animateStatusBarIcon, forKey: Keys.animateStatusBarIcon) }
     }
 
+    @Published var statusBarAnimationFollowsCPU: Bool {
+        didSet {
+            defaults.set(
+                statusBarAnimationFollowsCPU,
+                forKey: Keys.statusBarAnimationFollowsCPU
+            )
+        }
+    }
+
     @Published var customStatusBarIcons: [CustomStatusBarIcon] {
         didSet {
             if let data = try? JSONEncoder().encode(customStatusBarIcons) {
@@ -85,6 +94,10 @@ final class AppSettings: ObservableObject {
             ?? defaultValues.statusBarIconID
         animateStatusBarIcon = defaults.object(forKey: Keys.animateStatusBarIcon) as? Bool
             ?? defaultValues.animateStatusBarIcon
+        statusBarAnimationFollowsCPU = defaults.object(
+            forKey: Keys.statusBarAnimationFollowsCPU
+        ) as? Bool
+            ?? defaultValues.statusBarAnimationFollowsCPU
         customStatusBarIcons = defaults.data(forKey: Keys.customStatusBarIcons)
             .flatMap { try? JSONDecoder().decode([CustomStatusBarIcon].self, from: $0) }
             ?? []
@@ -141,6 +154,7 @@ final class AppSettings: ObservableObject {
         showStatusBarWindowLabels = defaultValues.showStatusBarWindowLabels
         statusBarIconID = defaultValues.statusBarIconID
         animateStatusBarIcon = defaultValues.animateStatusBarIcon
+        statusBarAnimationFollowsCPU = defaultValues.statusBarAnimationFollowsCPU
         customStatusBarIcons = []
         usageTrendRangeDays = defaultValues.usageTrendRangeDays
     }
@@ -158,6 +172,7 @@ final class AppSettings: ObservableObject {
         static let statusBarIconStyle = "statusBarIconStyle"
         static let statusBarIconID = "statusBarIconID"
         static let animateStatusBarIcon = "animateStatusBarIcon"
+        static let statusBarAnimationFollowsCPU = "statusBarAnimationFollowsCPU"
         static let customStatusBarIcons = "customStatusBarIcons"
         static let usageTrendRangeDays = "usageTrendRangeDays"
 
@@ -174,6 +189,7 @@ final class AppSettings: ObservableObject {
             statusBarIconStyle,
             statusBarIconID,
             animateStatusBarIcon,
+            statusBarAnimationFollowsCPU,
             customStatusBarIcons,
             usageTrendRangeDays
         ]
@@ -190,6 +206,7 @@ final class AppSettings: ObservableObject {
         var showStatusBarWindowLabels: Bool
         var statusBarIconID: String
         var animateStatusBarIcon: Bool
+        var statusBarAnimationFollowsCPU: Bool
         var usageTrendRangeDays: Int
 
         static var current: DefaultValues {
@@ -206,6 +223,7 @@ final class AppSettings: ObservableObject {
                 showStatusBarWindowLabels: true,
                 statusBarIconID: StatusBarIconCatalog.defaultID,
                 animateStatusBarIcon: true,
+                statusBarAnimationFollowsCPU: false,
                 usageTrendRangeDays: 30
             )
         }

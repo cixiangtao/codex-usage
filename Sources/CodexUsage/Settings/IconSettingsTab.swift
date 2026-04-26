@@ -20,13 +20,22 @@ struct IconSettingsTab: View {
             SettingsSection(
                 icon: "play.circle",
                 title: "播放",
-                subtitle: "动图由 macOS 原生图像视图播放，不会触发状态栏整体刷新。"
+                subtitle: "保留动图原始节奏，也可以让动画随系统负载变化。"
             ) {
-                ToggleRow(
-                    title: "播放状态栏动画",
-                    subtitle: "关闭后，像素图标和 GIF 都停留在首帧",
-                    isOn: $settings.animateStatusBarIcon
-                )
+                VStack(spacing: 8) {
+                    ToggleRow(
+                        title: "播放状态栏动画",
+                        subtitle: "关闭后，像素图标和 GIF 都停留在首帧",
+                        isOn: $settings.animateStatusBarIcon
+                    )
+
+                    ToggleRow(
+                        title: "负载联动",
+                        subtitle: "系统越忙，动画越快；每 3 秒平滑调整一次",
+                        isOn: $settings.statusBarAnimationFollowsCPU,
+                        isDisabled: !settings.animateStatusBarIcon
+                    )
+                }
             }
 
             SettingsSection(

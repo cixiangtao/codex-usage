@@ -71,6 +71,50 @@ struct AppSettingsTests {
         #expect(reloadedSettings.animateStatusBarIcon == false)
     }
 
+    @Test("CPU-linked animation is opt-in, persists, and resets")
+    @MainActor
+    func cpuLinkedAnimationSettingPersistsAndResets() {
+        let suiteName = "CodexUsageTests.AppSettings.CPUAnimation.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettings(defaults: defaults)
+        #expect(settings.statusBarAnimationFollowsCPU == false)
+
+        settings.statusBarAnimationFollowsCPU = true
+
+        let reloadedSettings = AppSettings(defaults: defaults)
+        #expect(reloadedSettings.statusBarAnimationFollowsCPU)
+
+        reloadedSettings.reset()
+        #expect(reloadedSettings.statusBarAnimationFollowsCPU == false)
+    }
+
+    @Test("CPU-linked timing is bounded and preserves original timing when disabled")
+    func cpuLinkedAnimationTimingIsBounded() {
+        #expect(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: -1) == 0.6)
+        #expect(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: 0.5) == 1.2)
+        #expect(
+            abs(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: 2) - 1.8)
+                < 0.000_001
+        )
+        #expect(
+            StatusBarAnimationTiming.interval(
+                baseDuration: 0.02,
+                speedMultiplier: 1.8,
+                followsCPU: true
+            ) == StatusBarAnimationTiming.minimumInterval
+        )
+        #expect(
+            StatusBarAnimationTiming.interval(
+                baseDuration: 0.08,
+                speedMultiplier: 0.8,
+                followsCPU: false
+            ) == 0.08
+        )
+    }
+
     @Test("All BuZhiYin default animations are bundled and readable")
     @MainActor
     func bundledGIFCatalogIsComplete() {
