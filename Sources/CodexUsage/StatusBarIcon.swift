@@ -44,29 +44,34 @@ struct StatusBarIconView: View {
     var descriptor: StatusBarIconDescriptor
     var health: UsageHealth
     var animates = false
+    var baseSpeed = 1.0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
         descriptor: StatusBarIconDescriptor,
         health: UsageHealth,
-        animates: Bool = false
+        animates: Bool = false,
+        baseSpeed: Double = 1
     ) {
         self.descriptor = descriptor
         self.health = health
         self.animates = animates
+        self.baseSpeed = baseSpeed
     }
 
     init(
         style: StatusBarIconStyle,
         health: UsageHealth,
-        animates: Bool = false
+        animates: Bool = false,
+        baseSpeed: Double = 1
     ) {
         self.init(
             descriptor: StatusBarIconCatalog.builtIns.first { $0.id == style.rawValue }
                 ?? StatusBarIconCatalog.builtIns[0],
             health: health,
-            animates: animates
+            animates: animates,
+            baseSpeed: baseSpeed
         )
     }
 
@@ -78,14 +83,16 @@ struct StatusBarIconView: View {
         case let .pixel(style):
             PixelStatusBarImageView(
                 style: style,
-                animates: animates && !reduceMotion
+                animates: animates && !reduceMotion,
+                baseSpeed: baseSpeed
             )
             .frame(width: 14, height: 14)
             .accessibilityLabel(accessibilityLabel)
         case let .image(url):
             AnimatedStatusBarImageView(
                 imageURL: url,
-                animates: animates && !reduceMotion
+                animates: animates && !reduceMotion,
+                baseSpeed: baseSpeed
             )
             .frame(width: 18, height: 16)
             .accessibilityLabel(accessibilityLabel)
@@ -114,6 +121,7 @@ struct StatusBarIconView: View {
 private struct PixelStatusBarImageView: NSViewRepresentable {
     var style: StatusBarIconStyle
     var animates: Bool
+    var baseSpeed: Double
 
     func makeNSView(context: Context) -> PixelAnimationImageView {
         let imageView = PixelAnimationImageView()
@@ -122,7 +130,11 @@ private struct PixelStatusBarImageView: NSViewRepresentable {
     }
 
     func updateNSView(_ imageView: PixelAnimationImageView, context: Context) {
-        imageView.configure(style: style, animates: animates)
+        imageView.configure(
+            style: style,
+            animates: animates,
+            baseSpeed: baseSpeed
+        )
     }
 
     static func dismantleNSView(_ imageView: PixelAnimationImageView, coordinator: ()) {
@@ -135,17 +147,20 @@ private final class PixelAnimationImageView: NSImageView {
     private var animationTimer: Timer?
     private var currentStyle: StatusBarIconStyle?
     private var currentFrame = 0
+    private var currentBaseSpeed = 1.0
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: 14, height: 14)
     }
 
-    func configure(style: StatusBarIconStyle, animates: Bool) {
+    func configure(style: StatusBarIconStyle, animates: Bool, baseSpeed: Double) {
+        let speedChanged = abs(currentBaseSpeed - baseSpeed) >= 0.001
         if currentStyle != style {
             currentStyle = style
             currentFrame = 0
             image = PixelStatusBarIconRenderer.image(style: style, frame: currentFrame)
         }
+        currentBaseSpeed = baseSpeed
 
         guard animates else {
             stopAnimating()
@@ -154,8 +169,18 @@ private final class PixelAnimationImageView: NSImageView {
             return
         }
 
+        if speedChanged {
+            stopAnimating()
+        }
         guard animationTimer == nil else { return }
-        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+        let timer = Timer(
+            timeInterval: StatusBarAnimationTiming.interval(
+                baseDuration: 0.5,
+                baseSpeedMultiplier: baseSpeed,
+                followsCPU: false
+            ),
+            repeats: true
+        ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let currentStyle = self.currentStyle else { return }
                 self.currentFrame += 1
@@ -179,6 +204,7 @@ private final class PixelAnimationImageView: NSImageView {
 private struct AnimatedStatusBarImageView: NSViewRepresentable {
     var imageURL: URL
     var animates: Bool
+    var baseSpeed: Double
 
     func makeNSView(context: Context) -> AnimatedImageView {
         let imageView = AnimatedImageView()
@@ -192,7 +218,11 @@ private struct AnimatedStatusBarImageView: NSViewRepresentable {
     }
 
     func updateNSView(_ imageView: AnimatedImageView, context: Context) {
-        imageView.configure(imageURL: imageURL, animates: animates)
+        imageView.configure(
+            imageURL: imageURL,
+            animates: animates,
+            baseSpeed: baseSpeed
+        )
     }
 
     static func dismantleNSView(_ imageView: AnimatedImageView, coordinator: ()) {
@@ -205,16 +235,23 @@ private final class AnimatedImageView: NSImageView {
     private var animationTimer: Timer?
     private var currentURL: URL?
     private var currentlyAnimates: Bool?
+    private var currentBaseSpeed = 1.0
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: 18, height: 16)
     }
 
-    func configure(imageURL: URL, animates: Bool) {
-        guard currentURL != imageURL || currentlyAnimates != animates else { return }
+    func configure(imageURL: URL, animates: Bool, baseSpeed: Double) {
+        guard currentURL != imageURL
+                || currentlyAnimates != animates
+                || abs(currentBaseSpeed - baseSpeed) >= 0.001
+        else {
+            return
+        }
 
         currentURL = imageURL
         currentlyAnimates = animates
+        currentBaseSpeed = baseSpeed
         stopAnimating()
 
         guard let animation = StatusBarAnimationLoader.animation(at: imageURL) else {
@@ -224,7 +261,7 @@ private final class AnimatedImageView: NSImageView {
 
         image = animation.frames[0]
         guard animates, animation.frames.count > 1 else { return }
-        scheduleFrame(animation, index: 1)
+        scheduleFrame(animation, index: 1, baseSpeed: baseSpeed)
     }
 
     func stopAnimating() {
@@ -232,10 +269,18 @@ private final class AnimatedImageView: NSImageView {
         animationTimer = nil
     }
 
-    private func scheduleFrame(_ animation: StatusBarAnimation, index: Int) {
+    private func scheduleFrame(
+        _ animation: StatusBarAnimation,
+        index: Int,
+        baseSpeed: Double
+    ) {
         let previousIndex = index == 0 ? animation.frames.count - 1 : index - 1
         let timer = Timer(
-            timeInterval: animation.durations[previousIndex],
+            timeInterval: StatusBarAnimationTiming.interval(
+                baseDuration: animation.durations[previousIndex],
+                baseSpeedMultiplier: baseSpeed,
+                followsCPU: false
+            ),
             repeats: false
         ) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -243,7 +288,8 @@ private final class AnimatedImageView: NSImageView {
                 self.image = animation.frames[index]
                 self.scheduleFrame(
                     animation,
-                    index: (index + 1) % animation.frames.count
+                    index: (index + 1) % animation.frames.count,
+                    baseSpeed: baseSpeed
                 )
             }
         }

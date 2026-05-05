@@ -2,20 +2,30 @@ import Darwin
 import Foundation
 
 struct StatusBarAnimationTiming {
-    static let minimumInterval: TimeInterval = 0.05
+    static let baseSpeedRange = 0.5...3.0
+    static let minimumInterval: TimeInterval = 1 / 30
 
     static func speedMultiplier(forCPUUsage usage: Double) -> Double {
         let boundedUsage = min(max(usage, 0), 1)
         return 0.6 + boundedUsage * 1.2
     }
 
+    static func clampedBaseSpeed(_ speed: Double) -> Double {
+        min(max(speed, baseSpeedRange.lowerBound), baseSpeedRange.upperBound)
+    }
+
     static func interval(
         baseDuration: TimeInterval,
-        speedMultiplier: Double,
+        baseSpeedMultiplier: Double,
+        cpuSpeedMultiplier: Double = 1,
         followsCPU: Bool
     ) -> TimeInterval {
-        guard followsCPU else { return baseDuration }
-        return max(baseDuration / max(speedMultiplier, 0.1), minimumInterval)
+        let baseSpeed = clampedBaseSpeed(baseSpeedMultiplier)
+        let cpuSpeed = followsCPU ? max(cpuSpeedMultiplier, 0.1) : 1
+        let effectiveSpeed = baseSpeed * cpuSpeed
+
+        guard abs(effectiveSpeed - 1) >= 0.001 else { return baseDuration }
+        return max(baseDuration / effectiveSpeed, minimumInterval)
     }
 }
 

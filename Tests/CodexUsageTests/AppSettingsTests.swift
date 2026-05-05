@@ -71,7 +71,7 @@ struct AppSettingsTests {
         #expect(reloadedSettings.animateStatusBarIcon == false)
     }
 
-    @Test("CPU-linked animation is opt-in, persists, and resets")
+    @Test("CPU-linked animation defaults on, persists, and resets")
     @MainActor
     func cpuLinkedAnimationSettingPersistsAndResets() {
         let suiteName = "CodexUsageTests.AppSettings.CPUAnimation.\(UUID().uuidString)"
@@ -80,18 +80,48 @@ struct AppSettingsTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let settings = AppSettings(defaults: defaults)
-        #expect(settings.statusBarAnimationFollowsCPU == false)
+        #expect(settings.statusBarAnimationFollowsCPU)
 
-        settings.statusBarAnimationFollowsCPU = true
+        settings.statusBarAnimationFollowsCPU = false
 
         let reloadedSettings = AppSettings(defaults: defaults)
-        #expect(reloadedSettings.statusBarAnimationFollowsCPU)
+        #expect(reloadedSettings.statusBarAnimationFollowsCPU == false)
 
         reloadedSettings.reset()
-        #expect(reloadedSettings.statusBarAnimationFollowsCPU == false)
+        #expect(reloadedSettings.statusBarAnimationFollowsCPU)
     }
 
-    @Test("CPU-linked timing is bounded and preserves original timing when disabled")
+    @Test("Animation base speed is remembered per icon and resets")
+    @MainActor
+    func animationBaseSpeedPersistsPerIcon() {
+        let suiteName = "CodexUsageTests.AppSettings.BaseSpeed.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettings(defaults: defaults)
+        #expect(settings.statusBarAnimationBaseSpeed(for: "builtin.zhiyin") == 1)
+
+        settings.setStatusBarAnimationBaseSpeed(2.4, for: "builtin.zhiyin")
+
+        let reloadedSettings = AppSettings(defaults: defaults)
+        #expect(
+            reloadedSettings.statusBarAnimationBaseSpeed(for: "builtin.zhiyin")
+                == 2.4
+        )
+        #expect(
+            reloadedSettings.statusBarAnimationBaseSpeed(for: "builtin.mongmong")
+                == 1
+        )
+
+        reloadedSettings.reset()
+        #expect(
+            reloadedSettings.statusBarAnimationBaseSpeed(for: "builtin.zhiyin")
+                == 1
+        )
+    }
+
+    @Test("Animation timing combines per-icon and CPU speed with a 30 FPS limit")
     func cpuLinkedAnimationTimingIsBounded() {
         #expect(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: -1) == 0.6)
         #expect(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: 0.5) == 1.2)
@@ -102,16 +132,24 @@ struct AppSettingsTests {
         #expect(
             StatusBarAnimationTiming.interval(
                 baseDuration: 0.02,
-                speedMultiplier: 1.8,
+                baseSpeedMultiplier: 3,
+                cpuSpeedMultiplier: 1.8,
                 followsCPU: true
             ) == StatusBarAnimationTiming.minimumInterval
         )
         #expect(
             StatusBarAnimationTiming.interval(
-                baseDuration: 0.08,
-                speedMultiplier: 0.8,
+                baseDuration: 0.2,
+                baseSpeedMultiplier: 2,
                 followsCPU: false
-            ) == 0.08
+            ) == 0.1
+        )
+        #expect(
+            StatusBarAnimationTiming.interval(
+                baseDuration: 0.2,
+                baseSpeedMultiplier: 1,
+                followsCPU: false
+            ) == 0.2
         )
     }
 

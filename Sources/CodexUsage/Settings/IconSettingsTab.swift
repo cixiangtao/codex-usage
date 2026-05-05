@@ -20,22 +20,13 @@ struct IconSettingsTab: View {
             SettingsSection(
                 icon: "play.circle",
                 title: "播放",
-                subtitle: "保留动图原始节奏，也可以让动画随系统负载变化。"
+                subtitle: "控制状态栏动画的播放与暂停。"
             ) {
-                VStack(spacing: 8) {
-                    ToggleRow(
-                        title: "播放状态栏动画",
-                        subtitle: "关闭后，像素图标和 GIF 都停留在首帧",
-                        isOn: $settings.animateStatusBarIcon
-                    )
-
-                    ToggleRow(
-                        title: "负载联动",
-                        subtitle: "系统越忙，动画越快；每 3 秒平滑调整一次",
-                        isOn: $settings.statusBarAnimationFollowsCPU,
-                        isDisabled: !settings.animateStatusBarIcon
-                    )
-                }
+                ToggleRow(
+                    title: "播放状态栏动画",
+                    subtitle: "关闭后，像素图标和 GIF 都停留在首帧",
+                    isOn: $settings.animateStatusBarIcon
+                )
             }
 
             SettingsSection(
@@ -48,7 +39,10 @@ struct IconSettingsTab: View {
                         StatusBarIconChoice(
                             descriptor: descriptor,
                             isSelected: settings.statusBarIconID == descriptor.id,
-                            animates: settings.animateStatusBarIcon
+                            animates: settings.animateStatusBarIcon,
+                            baseSpeed: settings.statusBarAnimationBaseSpeed(
+                                for: descriptor.id
+                            )
                         ) {
                             settings.statusBarIconID = descriptor.id
                         }
@@ -80,6 +74,26 @@ struct IconSettingsTab: View {
                     .controlSize(.small)
                 }
             }
+
+            SettingsSection(
+                icon: "slider.horizontal.3",
+                title: "动画调节",
+                subtitle: "为当前动画设置独立速度，并按需开启负载联动。"
+            ) {
+                VStack(spacing: 8) {
+                    AnimationBaseSpeedRow(
+                        speed: animationBaseSpeed,
+                        isDisabled: animationControlsAreDisabled
+                    )
+
+                    ToggleRow(
+                        title: "负载联动",
+                        subtitle: "在基准速度上随系统负载变化；每 3 秒平滑调整",
+                        isOn: $settings.statusBarAnimationFollowsCPU,
+                        isDisabled: animationControlsAreDisabled
+                    )
+                }
+            }
         }
         .alert(
             "无法导入图标",
@@ -105,6 +119,35 @@ struct IconSettingsTab: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("只会删除 CodexUsage 保存的副本，不会影响原文件。")
+        }
+    }
+
+    private var animationBaseSpeed: Binding<Double> {
+        Binding(
+            get: {
+                settings.statusBarAnimationBaseSpeed(
+                    for: settings.statusBarIconID
+                )
+            },
+            set: {
+                settings.setStatusBarAnimationBaseSpeed(
+                    $0,
+                    for: settings.statusBarIconID
+                )
+            }
+        )
+    }
+
+    private var animationControlsAreDisabled: Bool {
+        guard settings.animateStatusBarIcon else { return true }
+
+        switch settings.selectedStatusBarIcon.source {
+        case .adaptive:
+            return true
+        case .pixel:
+            return false
+        case let .image(url):
+            return url.pathExtension.lowercased() != "gif"
         }
     }
 
@@ -193,7 +236,8 @@ struct IconSettingsTab: View {
             descriptor: descriptor,
             health: .normal,
             animates: settings.animateStatusBarIcon
-                && settings.statusBarIconID == descriptor.id
+                && settings.statusBarIconID == descriptor.id,
+            baseSpeed: settings.statusBarAnimationBaseSpeed(for: descriptor.id)
         )
         .frame(width: 22, height: 20)
         .background(
@@ -212,6 +256,7 @@ private struct StatusBarIconChoice: View {
     var descriptor: StatusBarIconDescriptor
     var isSelected: Bool
     var animates: Bool
+    var baseSpeed: Double
     var action: () -> Void
 
     var body: some View {
@@ -220,7 +265,8 @@ private struct StatusBarIconChoice: View {
                 StatusBarIconView(
                     descriptor: descriptor,
                     health: .normal,
-                    animates: animates && isSelected
+                    animates: animates && isSelected,
+                    baseSpeed: baseSpeed
                 )
                 .frame(width: 22, height: 20)
                 .background(
@@ -262,5 +308,61 @@ private struct StatusBarIconChoice: View {
         )
         .accessibilityLabel("\(descriptor.title)，\(descriptor.subtitle)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct AnimationBaseSpeedRow: View {
+    @Binding var speed: Double
+    var isDisabled: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("基准速度")
+                        .font(.callout.weight(.medium))
+
+                    Text("当前图标单独记忆；1× 使用动图原始速度")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(speed.formatted(.number.precision(.fractionLength(1))) + "×")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                Text("慢")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Slider(
+                    value: $speed,
+                    in: StatusBarAnimationTiming.baseSpeedRange,
+                    step: 0.1
+                )
+
+                Text("快")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Button("重置") {
+                    speed = 1
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .disabled(abs(speed - 1) < 0.001)
+            }
+        }
+        .padding(10)
+        .background(
+            Color(nsColor: .windowBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .opacity(isDisabled ? 0.62 : 1)
+        .disabled(isDisabled)
     }
 }

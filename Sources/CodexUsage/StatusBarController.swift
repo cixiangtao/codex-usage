@@ -111,15 +111,17 @@ final class StatusBarController: NSObject {
 
         button.title = label.labelText
         button.imagePosition = label.labelText.isEmpty ? .imageOnly : .imageLeading
-        button.toolTip = "Codex Usage · \(settings.selectedStatusBarIcon.title)"
+        let descriptor = settings.selectedStatusBarIcon
+        button.toolTip = "Codex Usage · \(descriptor.title)"
 
         stopAnimation()
         render(
-            descriptor: settings.selectedStatusBarIcon,
+            descriptor: descriptor,
             health: health,
             animates: settings.animateStatusBarIcon
                 && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-            followsCPU: settings.statusBarAnimationFollowsCPU
+            followsCPU: settings.statusBarAnimationFollowsCPU,
+            baseSpeed: settings.statusBarAnimationBaseSpeed(for: descriptor.id)
         )
         resizePopover()
     }
@@ -128,7 +130,8 @@ final class StatusBarController: NSObject {
         descriptor: StatusBarIconDescriptor,
         health: UsageHealth,
         animates: Bool,
-        followsCPU: Bool
+        followsCPU: Bool,
+        baseSpeed: Double
     ) {
         guard let button = statusItem.button else { return }
 
@@ -144,7 +147,11 @@ final class StatusBarController: NSObject {
             button.image = PixelStatusBarIconRenderer.image(style: style, frame: 0)
             guard animates else { return }
             startCPULinkIfNeeded(followsCPU)
-            startPixelAnimation(style: style, followsCPU: followsCPU)
+            startPixelAnimation(
+                style: style,
+                followsCPU: followsCPU,
+                baseSpeed: baseSpeed
+            )
         case let .image(url):
             guard let animation = StatusBarAnimationLoader.animation(at: url) else {
                 button.image = NSImage(
@@ -157,7 +164,11 @@ final class StatusBarController: NSObject {
             button.image = animation.frames[0]
             guard animates, animation.frames.count > 1 else { return }
             startCPULinkIfNeeded(followsCPU)
-            startImageAnimation(animation, followsCPU: followsCPU)
+            startImageAnimation(
+                animation,
+                followsCPU: followsCPU,
+                baseSpeed: baseSpeed
+            )
         }
     }
 
@@ -171,13 +182,15 @@ final class StatusBarController: NSObject {
 
     private func startPixelAnimation(
         style: StatusBarIconStyle,
-        followsCPU: Bool
+        followsCPU: Bool,
+        baseSpeed: Double
     ) {
         schedulePixelFrame(
             style: style,
             frame: 1,
             generation: animationGeneration,
-            followsCPU: followsCPU
+            followsCPU: followsCPU,
+            baseSpeed: baseSpeed
         )
     }
 
@@ -185,12 +198,14 @@ final class StatusBarController: NSObject {
         style: StatusBarIconStyle,
         frame: Int,
         generation: Int,
-        followsCPU: Bool
+        followsCPU: Bool,
+        baseSpeed: Double
     ) {
         let timer = Timer(
             timeInterval: animationInterval(
                 baseDuration: 0.5,
-                followsCPU: followsCPU
+                followsCPU: followsCPU,
+                baseSpeed: baseSpeed
             ),
             repeats: false
         ) { [weak self] _ in
@@ -204,7 +219,8 @@ final class StatusBarController: NSObject {
                     style: style,
                     frame: frame + 1,
                     generation: generation,
-                    followsCPU: followsCPU
+                    followsCPU: followsCPU,
+                    baseSpeed: baseSpeed
                 )
             }
         }
@@ -214,13 +230,15 @@ final class StatusBarController: NSObject {
 
     private func startImageAnimation(
         _ animation: StatusBarAnimation,
-        followsCPU: Bool
+        followsCPU: Bool,
+        baseSpeed: Double
     ) {
         scheduleImageFrame(
             animation,
             index: 1,
             generation: animationGeneration,
-            followsCPU: followsCPU
+            followsCPU: followsCPU,
+            baseSpeed: baseSpeed
         )
     }
 
@@ -228,13 +246,15 @@ final class StatusBarController: NSObject {
         _ animation: StatusBarAnimation,
         index: Int,
         generation: Int,
-        followsCPU: Bool
+        followsCPU: Bool,
+        baseSpeed: Double
     ) {
         let previousIndex = index == 0 ? animation.frames.count - 1 : index - 1
         let timer = Timer(
             timeInterval: animationInterval(
                 baseDuration: animation.durations[previousIndex],
-                followsCPU: followsCPU
+                followsCPU: followsCPU,
+                baseSpeed: baseSpeed
             ),
             repeats: false
         ) { [weak self] _ in
@@ -245,7 +265,8 @@ final class StatusBarController: NSObject {
                     animation,
                     index: (index + 1) % animation.frames.count,
                     generation: generation,
-                    followsCPU: followsCPU
+                    followsCPU: followsCPU,
+                    baseSpeed: baseSpeed
                 )
             }
         }
@@ -263,11 +284,13 @@ final class StatusBarController: NSObject {
 
     private func animationInterval(
         baseDuration: TimeInterval,
-        followsCPU: Bool
+        followsCPU: Bool,
+        baseSpeed: Double
     ) -> TimeInterval {
         StatusBarAnimationTiming.interval(
             baseDuration: baseDuration,
-            speedMultiplier: animationSpeedMultiplier,
+            baseSpeedMultiplier: baseSpeed,
+            cpuSpeedMultiplier: animationSpeedMultiplier,
             followsCPU: followsCPU
         )
     }

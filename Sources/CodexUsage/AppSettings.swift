@@ -51,6 +51,14 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var statusBarAnimationBaseSpeeds: [String: Double] {
+        didSet {
+            if let data = try? JSONEncoder().encode(statusBarAnimationBaseSpeeds) {
+                defaults.set(data, forKey: Keys.statusBarAnimationBaseSpeeds)
+            }
+        }
+    }
+
     @Published var customStatusBarIcons: [CustomStatusBarIcon] {
         didSet {
             if let data = try? JSONEncoder().encode(customStatusBarIcons) {
@@ -98,6 +106,11 @@ final class AppSettings: ObservableObject {
             forKey: Keys.statusBarAnimationFollowsCPU
         ) as? Bool
             ?? defaultValues.statusBarAnimationFollowsCPU
+        statusBarAnimationBaseSpeeds = defaults.data(
+            forKey: Keys.statusBarAnimationBaseSpeeds
+        )
+            .flatMap { try? JSONDecoder().decode([String: Double].self, from: $0) }
+            ?? [:]
         customStatusBarIcons = defaults.data(forKey: Keys.customStatusBarIcons)
             .flatMap { try? JSONDecoder().decode([CustomStatusBarIcon].self, from: $0) }
             ?? []
@@ -118,6 +131,24 @@ final class AppSettings: ObservableObject {
         )
     }
 
+    func statusBarAnimationBaseSpeed(for iconID: String) -> Double {
+        StatusBarAnimationTiming.clampedBaseSpeed(
+            statusBarAnimationBaseSpeeds[iconID] ?? 1
+        )
+    }
+
+    func setStatusBarAnimationBaseSpeed(_ speed: Double, for iconID: String) {
+        var speeds = statusBarAnimationBaseSpeeds
+        let clampedSpeed = StatusBarAnimationTiming.clampedBaseSpeed(speed)
+
+        if abs(clampedSpeed - 1) < 0.001 {
+            speeds.removeValue(forKey: iconID)
+        } else {
+            speeds[iconID] = clampedSpeed
+        }
+        statusBarAnimationBaseSpeeds = speeds
+    }
+
     @discardableResult
     func importStatusBarIcon(from sourceURL: URL) throws -> CustomStatusBarIcon {
         let icon = try CustomStatusBarIconStore.importIcon(
@@ -132,6 +163,7 @@ final class AppSettings: ObservableObject {
     func removeStatusBarIcon(_ icon: CustomStatusBarIcon) throws {
         try CustomStatusBarIconStore.remove(icon, from: customIconDirectory)
         customStatusBarIcons.removeAll { $0.id == icon.id }
+        statusBarAnimationBaseSpeeds.removeValue(forKey: icon.catalogID)
         if statusBarIconID == icon.catalogID {
             statusBarIconID = StatusBarIconCatalog.defaultID
         }
@@ -155,6 +187,7 @@ final class AppSettings: ObservableObject {
         statusBarIconID = defaultValues.statusBarIconID
         animateStatusBarIcon = defaultValues.animateStatusBarIcon
         statusBarAnimationFollowsCPU = defaultValues.statusBarAnimationFollowsCPU
+        statusBarAnimationBaseSpeeds = [:]
         customStatusBarIcons = []
         usageTrendRangeDays = defaultValues.usageTrendRangeDays
     }
@@ -173,6 +206,7 @@ final class AppSettings: ObservableObject {
         static let statusBarIconID = "statusBarIconID"
         static let animateStatusBarIcon = "animateStatusBarIcon"
         static let statusBarAnimationFollowsCPU = "statusBarAnimationFollowsCPU"
+        static let statusBarAnimationBaseSpeeds = "statusBarAnimationBaseSpeeds"
         static let customStatusBarIcons = "customStatusBarIcons"
         static let usageTrendRangeDays = "usageTrendRangeDays"
 
@@ -190,6 +224,7 @@ final class AppSettings: ObservableObject {
             statusBarIconID,
             animateStatusBarIcon,
             statusBarAnimationFollowsCPU,
+            statusBarAnimationBaseSpeeds,
             customStatusBarIcons,
             usageTrendRangeDays
         ]
@@ -223,7 +258,7 @@ final class AppSettings: ObservableObject {
                 showStatusBarWindowLabels: true,
                 statusBarIconID: StatusBarIconCatalog.defaultID,
                 animateStatusBarIcon: true,
-                statusBarAnimationFollowsCPU: false,
+                statusBarAnimationFollowsCPU: true,
                 usageTrendRangeDays: 30
             )
         }
