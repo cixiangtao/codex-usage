@@ -88,7 +88,7 @@ struct IconSettingsTab: View {
 
                     ToggleRow(
                         title: "负载联动",
-                        subtitle: "在基准速度上随系统负载变化；每 3 秒平滑调整",
+                        subtitle: "在基准速度上随系统 CPU 占用明显提速；每 3 秒调整",
                         isOn: $settings.statusBarAnimationFollowsCPU,
                         isDisabled: animationControlsAreDisabled
                     )

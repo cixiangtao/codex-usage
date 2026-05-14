@@ -3,11 +3,13 @@ import Foundation
 
 struct StatusBarAnimationTiming {
     static let baseSpeedRange = 0.5...3.0
-    static let minimumInterval: TimeInterval = 1 / 30
+    static let minimumInterval: TimeInterval = 0.012
+    private static let minimumIdleFraction = 0.1
 
     static func speedMultiplier(forCPUUsage usage: Double) -> Double {
         let boundedUsage = min(max(usage, 0), 1)
-        return 0.6 + boundedUsage * 1.2
+        let idleFraction = max(1 - boundedUsage, minimumIdleFraction)
+        return 1 / idleFraction
     }
 
     static func clampedBaseSpeed(_ speed: Double) -> Double {
@@ -32,12 +34,10 @@ struct StatusBarAnimationTiming {
 @MainActor
 final class SystemCPUUsageMonitor {
     private static let samplingInterval: TimeInterval = 3
-    private static let smoothingFactor = 0.3
 
     private var timer: Timer?
     private var samplingTask: Task<Void, Never>?
     private var previousTicks: CPUTicks?
-    private var smoothedUsage: Double?
     private var onUpdate: ((Double) -> Void)?
 
     func start(onUpdate: @escaping (Double) -> Void) {
@@ -90,11 +90,7 @@ final class SystemCPUUsageMonitor {
         guard totalDelta > 0 else { return }
 
         let usage = min(max(Double(busyDelta) / Double(totalDelta), 0), 1)
-        let smoothed = smoothedUsage.map {
-            $0 + Self.smoothingFactor * (usage - $0)
-        } ?? usage
-        smoothedUsage = smoothed
-        onUpdate?(smoothed)
+        onUpdate?(usage)
     }
 
     nonisolated private static func readTicks() -> CPUTicks? {

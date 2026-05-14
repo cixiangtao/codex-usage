@@ -121,21 +121,30 @@ struct AppSettingsTests {
         )
     }
 
-    @Test("Animation timing combines per-icon and CPU speed with a 30 FPS limit")
+    @Test("Animation timing combines per-icon and inverse-idle CPU speed")
     func cpuLinkedAnimationTimingIsBounded() {
-        #expect(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: -1) == 0.6)
-        #expect(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: 0.5) == 1.2)
+        #expect(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: -1) == 1)
+        #expect(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: 0.5) == 2)
+        #expect(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: 0.75) == 4)
         #expect(
-            abs(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: 2) - 1.8)
+            abs(StatusBarAnimationTiming.speedMultiplier(forCPUUsage: 2) - 10)
                 < 0.000_001
         )
         #expect(
             StatusBarAnimationTiming.interval(
                 baseDuration: 0.02,
                 baseSpeedMultiplier: 3,
-                cpuSpeedMultiplier: 1.8,
+                cpuSpeedMultiplier: 10,
                 followsCPU: true
             ) == StatusBarAnimationTiming.minimumInterval
+        )
+        #expect(
+            StatusBarAnimationTiming.interval(
+                baseDuration: 0.2,
+                baseSpeedMultiplier: 2,
+                cpuSpeedMultiplier: 2,
+                followsCPU: true
+            ) == 0.05
         )
         #expect(
             StatusBarAnimationTiming.interval(
