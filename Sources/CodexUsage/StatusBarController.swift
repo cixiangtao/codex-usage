@@ -67,6 +67,14 @@ final class StatusBarController: NSObject {
             }
             .store(in: &cancellables)
 
+        NotificationCenter.default.publisher(for: .codexUsagePopoverContentSizeDidChange)
+            .sink { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.resizePopover()
+                }
+            }
+            .store(in: &cancellables)
+
         updateStatusItem()
     }
 
@@ -489,5 +497,8 @@ private struct StatusBarContrastSamples {
 extension Notification.Name {
     static let closeCodexUsageStatusPopover = Notification.Name(
         "closeCodexUsageStatusPopover"
+    )
+    static let codexUsagePopoverContentSizeDidChange = Notification.Name(
+        "codexUsagePopoverContentSizeDidChange"
     )
 }

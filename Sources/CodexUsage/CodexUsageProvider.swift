@@ -136,7 +136,8 @@ actor CodexUsageProvider: UsageProvider {
             hasCards: payload.availableCount > 0,
             unlimited: false,
             balance: payload.availableCount,
-            expiresAt: payload.expiresAt
+            expiresAt: payload.expiresAt,
+            cards: payload.cards
         )
     }
 
@@ -1558,6 +1559,16 @@ private struct CodexUsageAPIResponse: Decodable {
 private struct CodexRateLimitResetCreditsResponse: Decodable {
     var availableCount: Int
     var expiresAt: Date?
+    var cards: [ResetCard] {
+        credits.map {
+            ResetCard(
+                status: $0.status,
+                expiresAt: $0.expiresAt
+            )
+        }
+    }
+
+    private var credits: [Credit]
 
     private enum CodingKeys: String, CodingKey {
         case availableCount = "available_count"
@@ -1581,7 +1592,7 @@ private struct CodexRateLimitResetCreditsResponse: Decodable {
             availableCount = 0
         }
 
-        let credits = (try? container.decodeIfPresent([Credit].self, forKey: .credits)) ?? []
+        credits = (try? container.decodeIfPresent([Credit].self, forKey: .credits)) ?? []
         expiresAt = Self.decodeFlexibleDate(
             container,
             keys: [

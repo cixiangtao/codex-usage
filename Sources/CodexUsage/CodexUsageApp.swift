@@ -349,8 +349,53 @@ struct RateWindowRow: View {
 
 struct ResetCardSummaryView: View {
     var info: ResetCardInfo?
+    @State private var isExpanded = false
 
     var body: some View {
+        VStack(spacing: 0) {
+            if cards.isEmpty {
+                summary
+            } else {
+                Button {
+                    isExpanded.toggle()
+                    NotificationCenter.default.post(
+                        name: .codexUsagePopoverContentSizeDidChange,
+                        object: nil
+                    )
+                } label: {
+                    summary
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityHint(isExpanded ? "收起每张重置卡的信息" : "展开每张重置卡的信息")
+            }
+
+            if isExpanded, !cards.isEmpty {
+                Divider()
+                    .padding(.leading, 46)
+
+                VStack(spacing: 0) {
+                    ForEach(Array(cards.enumerated()), id: \.offset) { index, card in
+                        resetCardRow(card, index: index)
+
+                        if index < cards.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(.leading, 46)
+                .padding(.trailing, 10)
+                .padding(.bottom, 8)
+            }
+        }
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(.separator.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private var summary: some View {
         HStack(spacing: 10) {
             Image(systemName: "arrow.counterclockwise.circle.fill")
                 .font(.system(size: 16, weight: .semibold))
@@ -368,6 +413,15 @@ struct ResetCardSummaryView: View {
                     Text(countText)
                         .font(.subheadline.monospacedDigit().weight(.semibold))
                         .foregroundStyle(tint)
+
+                    if !cards.isEmpty {
+                        Image(systemName: "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .animation(.easeOut(duration: 0.15), value: isExpanded)
+                            .accessibilityHidden(true)
+                    }
                 }
 
                 Text(expirationText)
@@ -377,11 +431,62 @@ struct ResetCardSummaryView: View {
             }
         }
         .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.separator.opacity(0.35), lineWidth: 1)
-        )
+    }
+
+    private var cards: [ResetCard] {
+        info?.cards ?? []
+    }
+
+    private func resetCardRow(_ card: ResetCard, index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("第 \(index + 1) 张")
+                    .font(.caption.weight(.medium))
+
+                Spacer()
+
+                Text(statusText(card.status))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(statusTint(card.status))
+            }
+
+            Text(expirationText(card.expiresAt))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 7)
+    }
+
+    private func statusText(_ status: String?) -> String {
+        switch status?.lowercased() {
+        case "available":
+            "可用"
+        case "used", "consumed":
+            "已使用"
+        case "expired":
+            "已过期"
+        case let status?:
+            status
+        case nil:
+            "状态未知"
+        }
+    }
+
+    private func statusTint(_ status: String?) -> Color {
+        status?.lowercased() == "available" ? .accentColor : .secondary
+    }
+
+    private func expirationText(_ expiresAt: Date?) -> String {
+        guard let expiresAt else {
+            return "到期时间未提供"
+        }
+
+        let now = Date()
+        if expiresAt <= now {
+            return "已于 \(UsageFormatters.fullDateTime(expiresAt)) 过期"
+        }
+
+        return "\(UsageFormatters.relativeDateString(for: expiresAt, relativeTo: now))后到期 · \(UsageFormatters.fullDateTime(expiresAt))"
     }
 
     private var countText: String {

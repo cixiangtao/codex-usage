@@ -46,6 +46,12 @@ struct ResetCardInfo: Codable, Equatable {
     var unlimited: Bool
     var balance: Int?
     var expiresAt: Date?
+    var cards: [ResetCard]? = nil
+}
+
+struct ResetCard: Codable, Equatable {
+    var status: String?
+    var expiresAt: Date?
 }
 
 enum CodexRateWindowKind {

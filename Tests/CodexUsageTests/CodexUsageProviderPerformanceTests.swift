@@ -401,6 +401,73 @@ struct CodexUsageProviderPerformanceTests {
         #expect(snapshot.primary?.usedPercent == 12)
     }
 
+    @Test("Reset card API preserves every card for the disclosure panel")
+    func preservesResetCardDetails() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+
+        try fixture.write(
+            #"{"tokens":{"access_token":"test-token","account_id":"test-account"}}"#,
+            to: fixture.root.appendingPathComponent("auth.json")
+        )
+
+        MockURLProtocol.requestHandler = { request in
+            let body: String
+            if request.url?.path.contains("rate-limit-reset-credits") == true {
+                body = """
+                {
+                  "available_count": 2,
+                  "credits": [
+                    {"status": "used", "expires_at": "2026-07-31T00:00:00Z"},
+                    {"status": "available", "expires_at": "2026-08-02T00:00:00Z"},
+                    {"status": "available", "expires_at": "2026-08-01T00:00:00Z"}
+                  ]
+                }
+                """
+            } else {
+                body = """
+                {
+                  "rate_limit": {
+                    "primary_window": {
+                      "used_percent": 12,
+                      "limit_window_seconds": 18000
+                    }
+                  }
+                }
+                """
+            }
+
+            let response = try #require(
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )
+            )
+            return (response, Data(body.utf8))
+        }
+        defer { MockURLProtocol.requestHandler = nil }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let provider = CodexUsageProvider(
+            session: session,
+            trendCacheURL: fixture.cacheURL
+        )
+        let snapshot = try await provider.fetchLatestSnapshot(codexHomePath: fixture.root.path)
+        let resetCards = try #require(snapshot.resetCards)
+        let cards = try #require(resetCards.cards)
+
+        #expect(resetCards.balance == 2)
+        #expect(cards.count == 3)
+        #expect(cards.map(\.status) == ["used", "available", "available"])
+        #expect(resetCards.expiresAt == cards[2].expiresAt)
+    }
+
 }
 
 private struct Fixture {

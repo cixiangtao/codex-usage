@@ -4,6 +4,25 @@ import Testing
 
 @Suite("Codex rate window identity")
 struct RateWindowKindTests {
+    @Test("Older reset card snapshots decode without disclosure details")
+    func decodesLegacyResetCardInfo() throws {
+        let data = Data(
+            """
+            {
+              "hasCards": true,
+              "unlimited": false,
+              "balance": 2,
+              "expiresAt": 812851200
+            }
+            """.utf8
+        )
+
+        let info = try JSONDecoder().decode(ResetCardInfo.self, from: data)
+
+        #expect(info.balance == 2)
+        #expect(info.cards == nil)
+    }
+
     @Test("A seven-day primary API slot is treated as the seven-day window")
     func classifiesSevenDayWindowByDuration() {
         let sevenDayWindow = RateWindow(
