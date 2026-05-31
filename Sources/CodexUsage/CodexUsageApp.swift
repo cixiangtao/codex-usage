@@ -350,11 +350,12 @@ struct RateWindowRow: View {
 struct ResetCardSummaryView: View {
     var info: ResetCardInfo?
     @State private var isExpanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 0) {
+        Group {
             if cards.isEmpty {
-                summary
+                content
             } else {
                 Button {
                     isExpanded.toggle()
@@ -363,12 +364,23 @@ struct ResetCardSummaryView: View {
                         object: nil
                     )
                 } label: {
-                    summary
+                    content
                 }
                 .buttonStyle(.plain)
-                .contentShape(Rectangle())
                 .accessibilityHint(isExpanded ? "收起每张重置卡的信息" : "展开每张重置卡的信息")
             }
+        }
+        .frame(maxWidth: .infinity)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(.separator.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private var content: some View {
+        VStack(spacing: 0) {
+            summary
 
             if isExpanded, !cards.isEmpty {
                 Divider()
@@ -388,11 +400,8 @@ struct ResetCardSummaryView: View {
                 .padding(.bottom, 8)
             }
         }
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.separator.opacity(0.35), lineWidth: 1)
-        )
+        .frame(maxWidth: .infinity)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var summary: some View {
@@ -418,8 +427,12 @@ struct ResetCardSummaryView: View {
                         Image(systemName: "chevron.right")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.tertiary)
+                            .frame(width: 12, height: 12)
                             .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .animation(.easeOut(duration: 0.15), value: isExpanded)
+                            .animation(
+                                reduceMotion ? nil : .easeOut(duration: 0.15),
+                                value: isExpanded
+                            )
                             .accessibilityHidden(true)
                     }
                 }
