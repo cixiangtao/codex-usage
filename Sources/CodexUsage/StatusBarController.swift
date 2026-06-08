@@ -45,7 +45,7 @@ final class StatusBarController: NSObject {
 
         popover.contentViewController = NSHostingController(rootView: content)
         popover.behavior = .transient
-        popover.animates = true
+        popover.animates = false
 
         settings.objectWillChange
             .sink { [weak self] _ in
@@ -309,10 +309,16 @@ final class StatusBarController: NSObject {
 
         let fittingHeight = contentView.fittingSize.height
         let screenHeight = statusItem.button?.window?.screen?.visibleFrame.height ?? 720
-        popover.contentSize = NSSize(
+        let targetSize = NSSize(
             width: 360,
             height: min(max(fittingHeight, 220), screenHeight - 60)
         )
+        guard abs(popover.contentSize.width - targetSize.width) > 0.5
+                || abs(popover.contentSize.height - targetSize.height) > 0.5 else {
+            return
+        }
+
+        popover.contentSize = targetSize
     }
 
     private func adaptiveSymbolName(for health: UsageHealth) -> String {

@@ -350,7 +350,6 @@ struct RateWindowRow: View {
 struct ResetCardSummaryView: View {
     var info: ResetCardInfo?
     @State private var isExpanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -424,15 +423,10 @@ struct ResetCardSummaryView: View {
                         .foregroundStyle(tint)
 
                     if !cards.isEmpty {
-                        Image(systemName: "chevron.right")
+                        Image(systemName: "chevron.up.chevron.down")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.tertiary)
                             .frame(width: 12, height: 12)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .animation(
-                                reduceMotion ? nil : .easeOut(duration: 0.15),
-                                value: isExpanded
-                            )
                             .accessibilityHidden(true)
                     }
                 }
