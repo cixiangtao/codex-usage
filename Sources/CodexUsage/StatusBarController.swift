@@ -10,8 +10,7 @@ final class StatusBarController: NSObject {
     private(set) var statusItem: NSStatusItem
     private let popover = NSPopover()
     private var cancellables: Set<AnyCancellable> = []
-    private var animationTimer: Timer?
-    private var animationGeneration = 0
+    private let animatedIconView = StatusBarAnimatedIconView(frame: .zero)
     private let cpuUsageMonitor = SystemCPUUsageMonitor()
     private var animationSpeedMultiplier = 1.0
 
@@ -33,6 +32,7 @@ final class StatusBarController: NSObject {
             button.imageScaling = .scaleProportionallyDown
             button.imageHugsTitle = true
             button.toolTip = "Codex Usage"
+            button.addSubview(animatedIconView)
         }
 
         let content = MenuBarContent(
@@ -152,14 +152,15 @@ final class StatusBarController: NSObject {
             image?.isTemplate = true
             button.image = image
         case let .pixel(style):
-            button.image = PixelStatusBarIconRenderer.image(style: style, frame: 0)
-            guard animates else { return }
+            guard animates, let animation = pixelAnimation(style: style) else {
+                button.image = PixelStatusBarIconRenderer.image(style: style, frame: 0)
+                return
+            }
+            guard startLayerAnimation(animation, button: button, baseSpeed: baseSpeed) else {
+                button.image = animation.frames[0]
+                return
+            }
             startCPULinkIfNeeded(followsCPU)
-            startPixelAnimation(
-                style: style,
-                followsCPU: followsCPU,
-                baseSpeed: baseSpeed
-            )
         case let .image(url):
             guard let animation = StatusBarAnimationLoader.animation(at: url) else {
                 button.image = NSImage(
@@ -169,137 +170,77 @@ final class StatusBarController: NSObject {
                 return
             }
 
-            button.image = animation.frames[0]
-            guard animates, animation.frames.count > 1 else { return }
+            guard animates, animation.frames.count > 1 else {
+                button.image = animation.frames[0]
+                return
+            }
+            guard startLayerAnimation(animation, button: button, baseSpeed: baseSpeed) else {
+                button.image = animation.frames[0]
+                return
+            }
             startCPULinkIfNeeded(followsCPU)
-            startImageAnimation(
-                animation,
-                followsCPU: followsCPU,
-                baseSpeed: baseSpeed
-            )
         }
     }
 
     private func startCPULinkIfNeeded(_ followsCPU: Bool) {
         guard followsCPU else { return }
         cpuUsageMonitor.start { [weak self] usage in
-            self?.animationSpeedMultiplier =
+            guard let self else { return }
+            animationSpeedMultiplier =
                 StatusBarAnimationTiming.speedMultiplier(forCPUUsage: usage)
+            animatedIconView.setPlaybackSpeed(animationSpeedMultiplier)
         }
     }
 
-    private func startPixelAnimation(
-        style: StatusBarIconStyle,
-        followsCPU: Bool,
-        baseSpeed: Double
-    ) {
-        schedulePixelFrame(
-            style: style,
-            frame: 1,
-            generation: animationGeneration,
-            followsCPU: followsCPU,
-            baseSpeed: baseSpeed
-        )
-    }
-
-    private func schedulePixelFrame(
-        style: StatusBarIconStyle,
-        frame: Int,
-        generation: Int,
-        followsCPU: Bool,
-        baseSpeed: Double
-    ) {
-        let timer = Timer(
-            timeInterval: animationInterval(
-                baseDuration: 0.5,
-                followsCPU: followsCPU,
-                baseSpeed: baseSpeed
-            ),
-            repeats: false
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, generation == self.animationGeneration else { return }
-                self.statusItem.button?.image = PixelStatusBarIconRenderer.image(
-                    style: style,
-                    frame: frame
-                )
-                self.schedulePixelFrame(
-                    style: style,
-                    frame: frame + 1,
-                    generation: generation,
-                    followsCPU: followsCPU,
-                    baseSpeed: baseSpeed
-                )
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        animationTimer = timer
-    }
-
-    private func startImageAnimation(
+    private func startLayerAnimation(
         _ animation: StatusBarAnimation,
-        followsCPU: Bool,
+        button: NSStatusBarButton,
         baseSpeed: Double
-    ) {
-        scheduleImageFrame(
-            animation,
-            index: 1,
-            generation: animationGeneration,
-            followsCPU: followsCPU,
-            baseSpeed: baseSpeed
-        )
-    }
+    ) -> Bool {
+        let placeholder = NSImage(size: animation.frames[0].size)
+        placeholder.isTemplate = true
+        button.image = placeholder
+        button.layoutSubtreeIfNeeded()
+        animatedIconView.frame =
+            button.cell?.imageRect(forBounds: button.bounds)
+            ?? NSRect(origin: .zero, size: animation.frames[0].size)
+        animatedIconView.layoutSubtreeIfNeeded()
 
-    private func scheduleImageFrame(
-        _ animation: StatusBarAnimation,
-        index: Int,
-        generation: Int,
-        followsCPU: Bool,
-        baseSpeed: Double
-    ) {
-        let previousIndex = index == 0 ? animation.frames.count - 1 : index - 1
-        let timer = Timer(
-            timeInterval: animationInterval(
-                baseDuration: animation.durations[previousIndex],
-                followsCPU: followsCPU,
+        guard
+            animatedIconView.play(
+                frames: animation.cgFrames,
+                durations: animation.durations,
+                usesTemplateRendering: animation.usesTemplateRendering,
                 baseSpeed: baseSpeed
-            ),
-            repeats: false
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, generation == self.animationGeneration else { return }
-                self.statusItem.button?.image = animation.frames[index]
-                self.scheduleImageFrame(
-                    animation,
-                    index: (index + 1) % animation.frames.count,
-                    generation: generation,
-                    followsCPU: followsCPU,
-                    baseSpeed: baseSpeed
-                )
-            }
+            )
+        else {
+            return false
         }
-        RunLoop.main.add(timer, forMode: .common)
-        animationTimer = timer
+
+        return true
     }
 
     private func stopAnimation() {
-        animationGeneration += 1
-        animationTimer?.invalidate()
-        animationTimer = nil
+        animatedIconView.stop()
         cpuUsageMonitor.stop()
         animationSpeedMultiplier = 1
     }
 
-    private func animationInterval(
-        baseDuration: TimeInterval,
-        followsCPU: Bool,
-        baseSpeed: Double
-    ) -> TimeInterval {
-        StatusBarAnimationTiming.interval(
-            baseDuration: baseDuration,
-            baseSpeedMultiplier: baseSpeed,
-            cpuSpeedMultiplier: animationSpeedMultiplier,
-            followsCPU: followsCPU
+    private func pixelAnimation(style: StatusBarIconStyle) -> StatusBarAnimation? {
+        let frameCount = style == .pixelBot ? 8 : 2
+        let frames = (0..<frameCount).map {
+            PixelStatusBarIconRenderer.image(style: style, frame: $0)
+        }
+        let cgFrames = frames.compactMap {
+            $0.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        }
+        guard cgFrames.count == frames.count else { return nil }
+
+        return StatusBarAnimation(
+            frames: frames,
+            cgFrames: cgFrames,
+            durations: Array(repeating: 0.5, count: frameCount),
+            usesTemplateRendering: true
         )
     }
 
@@ -337,6 +278,7 @@ final class StatusBarController: NSObject {
 
 struct StatusBarAnimation: @unchecked Sendable {
     let frames: [NSImage]
+    let cgFrames: [CGImage]
     let durations: [TimeInterval]
     let usesTemplateRendering: Bool
 }
@@ -355,6 +297,7 @@ enum StatusBarAnimationLoader {
         }
 
         var frames: [NSImage] = []
+        var cgFrames: [CGImage] = []
         var durations: [TimeInterval] = []
         var contrastSamples = StatusBarContrastSamples()
 
@@ -376,6 +319,7 @@ enum StatusBarAnimationLoader {
             if index < 8 {
                 contrastSamples.add(cgImage)
             }
+            cgFrames.append(cgImage)
             frames.append(statusBarImage(from: cgImage))
             durations.append(frameDuration(source: source, index: index))
         }
@@ -385,6 +329,7 @@ enum StatusBarAnimationLoader {
         frames.forEach { $0.isTemplate = usesTemplateRendering }
         let animation = StatusBarAnimation(
             frames: frames,
+            cgFrames: cgFrames,
             durations: durations,
             usesTemplateRendering: usesTemplateRendering
         )

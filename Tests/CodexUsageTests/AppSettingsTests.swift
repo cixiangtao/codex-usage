@@ -162,6 +162,67 @@ struct AppSettingsTests {
         )
     }
 
+    @Test("Layer animation preserves frame timing and bounds accelerated playback")
+    func layerAnimationTimelinePreservesExperience() throws {
+        let timeline = try #require(
+            StatusBarLayerAnimationTimeline(
+                durations: [0.1, 0.2, 0.1],
+                baseSpeed: 2
+            )
+        )
+
+        #expect(timeline.frameDurations == [0.05, 0.1, 0.05])
+        #expect(
+            zip(timeline.keyTimes, [0, 0.25, 0.75]).allSatisfy {
+                abs($0 - $1) < 0.000_001
+            }
+        )
+        #expect(abs(timeline.duration - 0.2) < 0.000_001)
+        #expect(
+            abs(
+                timeline.clampedPlaybackSpeed(10)
+                    - 0.05 / StatusBarAnimationTiming.minimumInterval
+            ) < 0.000_001
+        )
+        #expect(
+            timeline.frameDurations.min()! / timeline.clampedPlaybackSpeed(10)
+                >= StatusBarAnimationTiming.minimumInterval
+        )
+    }
+
+    @Test("Status bar animation is registered on a Core Animation layer")
+    @MainActor
+    func statusBarAnimationUsesLayerPlayback() throws {
+        let descriptor = try #require(
+            StatusBarIconCatalog.builtIns.first {
+                $0.id == "builtin.zhiyin_basketball"
+            }
+        )
+        let url = try #require(StatusBarIconCatalog.resourceURL(for: descriptor))
+        let animation = try #require(StatusBarAnimationLoader.animation(at: url))
+        let view = StatusBarAnimatedIconView(
+            frame: NSRect(x: 0, y: 0, width: 18, height: 18)
+        )
+
+        #expect(
+            view.play(
+                frames: animation.cgFrames,
+                durations: animation.durations,
+                usesTemplateRendering: animation.usesTemplateRendering,
+                baseSpeed: 2.5
+            )
+        )
+        #expect(view.isAnimating)
+        #expect(view.isHidden == false)
+
+        view.setPlaybackSpeed(4)
+        #expect(view.isAnimating)
+
+        view.stop()
+        #expect(view.isAnimating == false)
+        #expect(view.isHidden)
+    }
+
     @Test("All BuZhiYin default animations are bundled and readable")
     @MainActor
     func bundledGIFCatalogIsComplete() {
