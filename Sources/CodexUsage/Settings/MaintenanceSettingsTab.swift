@@ -13,7 +13,7 @@ struct MaintenanceSettingsTab: View {
             SettingsSection(
                 icon: "arrow.down.circle",
                 title: "更新",
-                subtitle: "从 GitLab Release 检查新版本。"
+                subtitle: "从 GitHub Release 检查新版本。"
             ) {
                 UpdateCheckRows(viewModel: updateViewModel)
             }

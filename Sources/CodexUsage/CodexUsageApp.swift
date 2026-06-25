@@ -1174,7 +1174,7 @@ struct UpdateCheckRows: View {
             return "当前 \(result.currentVersion)，最新 \(result.releaseName)，可自动下载并重启。"
         }
 
-        return "当前 \(result.currentVersion)，GitLab 最新 \(result.latestVersion)。"
+        return "当前 \(result.currentVersion)，GitHub 最新 \(result.latestVersion)。"
     }
 
     private var downloadButtonTitle: String {

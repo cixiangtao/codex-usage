@@ -23,7 +23,11 @@ struct UpdateChecker: Sendable {
     }
 
     func checkForUpdates() async throws -> UpdateCheckResult {
-        let request = URLRequest(url: UpdateConfiguration.latestReleaseAPIURL)
+        var request = URLRequest(url: UpdateConfiguration.latestReleaseAPIURL)
+        request.timeoutInterval = 10
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.setValue("CodexUsage", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -34,17 +38,16 @@ struct UpdateChecker: Sendable {
             throw UpdateCheckError.httpStatus(httpResponse.statusCode)
         }
 
-        let release = try decoder.decode(GitLabRelease.self, from: data)
+        let release = try decoder.decode(GitHubAppRelease.self, from: data)
         let currentVersion = Self.currentVersion
         let latestVersion = release.normalizedVersion
-        let releasePageURL = UpdateConfiguration.releasePageURL
         let downloadURL = release.preferredDownloadURL
 
         return UpdateCheckResult(
             currentVersion: currentVersion,
             latestVersion: latestVersion,
             releaseName: release.displayName,
-            releasePageURL: releasePageURL,
+            releasePageURL: release.pageURL,
             downloadURL: downloadURL,
             checkedAt: Date(),
             isUpdateAvailable: Self.isVersion(latestVersion, newerThan: currentVersion)
@@ -72,38 +75,30 @@ enum UpdateCheckError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            "无法读取 GitLab 更新响应。"
+            "无法读取 GitHub 更新响应。"
         case .httpStatus(let status):
             if status == 401 || status == 403 || status == 404 {
-                "无法访问 GitLab Release，请确认仓库 Release API 可匿名读取。"
+                "无法访问 GitHub Release，请确认仓库和 Release 可公开读取。"
             } else {
-                "GitLab 更新检测失败，状态码 \(status)。"
+                "GitHub 更新检测失败，状态码 \(status)。"
             }
         }
     }
 }
 
-private enum UpdateConfiguration {
-    static let gitLabHost = "gitlab-ee.zhenguanyu.com"
-    static let projectPath = "cixiangtao/codex-usage"
+enum UpdateConfiguration {
+    static let repositoryPath = "cixiangtao/codex-usage"
 
     static var latestReleaseAPIURL: URL {
-        URL(string: "https://\(gitLabHost)/api/v4/projects/\(encodedProjectPath)/releases/permalink/latest")!
-    }
-
-    static var releasePageURL: URL {
-        URL(string: "https://\(gitLabHost)/\(projectPath)/-/releases")!
-    }
-
-    private static var encodedProjectPath: String {
-        projectPath.replacingOccurrences(of: "/", with: "%2F")
+        URL(string: "https://api.github.com/repos/\(repositoryPath)/releases/latest")!
     }
 }
 
-private struct GitLabRelease: Decodable, Equatable, Sendable {
+struct GitHubAppRelease: Decodable, Equatable, Sendable {
     var tagName: String
     var name: String?
-    var assets: GitLabReleaseAssets?
+    var pageURL: URL
+    var assets: [GitHubAppReleaseAsset]
 
     var normalizedVersion: String {
         tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
@@ -114,39 +109,29 @@ private struct GitLabRelease: Decodable, Equatable, Sendable {
     }
 
     var preferredDownloadURL: URL? {
-        assets?.links
+        assets
             .first { link in
                 let lowercasedName = link.name.lowercased()
                 return lowercasedName.contains("codexusage") && lowercasedName.hasSuffix(".zip")
             }?
-            .downloadURL
-        ?? assets?.links.first?.downloadURL
+            .browserDownloadURL
     }
 
     private enum CodingKeys: String, CodingKey {
         case tagName = "tag_name"
         case name
+        case pageURL = "html_url"
         case assets
     }
 }
 
-private struct GitLabReleaseAssets: Decodable, Equatable, Sendable {
-    var links: [GitLabReleaseAssetLink]
-}
-
-private struct GitLabReleaseAssetLink: Decodable, Equatable, Sendable {
+struct GitHubAppReleaseAsset: Decodable, Equatable, Sendable {
     var name: String
-    var url: URL
-    var directAssetURL: URL?
-
-    var downloadURL: URL {
-        directAssetURL ?? url
-    }
+    var browserDownloadURL: URL
 
     private enum CodingKeys: String, CodingKey {
         case name
-        case url
-        case directAssetURL = "direct_asset_url"
+        case browserDownloadURL = "browser_download_url"
     }
 }
 
