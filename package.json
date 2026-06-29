@@ -8,12 +8,11 @@
     "dev": "bun scripts/dev-watch.ts",
     "dev:watch": "bun dev",
     "package:app": "bun scripts/package-app.ts",
-    "release:local": "bun scripts/release-local.ts",
+    "release:prepare": "bun scripts/prepare-release.ts",
     "typecheck": "bunx tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^24.0.10",
-    "release-it": "^20.2.1",
     "typescript": "^6.0.3"
   }
 }

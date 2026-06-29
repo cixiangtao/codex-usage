@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix, for example 1.0.18
+        required: true
+        type: string
+      release_notes:
+        description: Release notes shown on the GitHub Release
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: macos-15
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate release state
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must use X.Y.Z format." >&2
+            exit 1
+          fi
+
+          TAG="v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub Release ${TAG} already exists." >&2
+            exit 1
+          fi
+
+          if git show-ref --verify --quiet "refs/tags/${TAG}"; then
+            CURRENT_VERSION="$(bun -p 'require("./package.json").version')"
+            TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+            HEAD_COMMIT="$(git rev-parse HEAD)"
+            if [[ "$CURRENT_VERSION" != "$VERSION" || "$TAG_COMMIT" != "$HEAD_COMMIT" ]]; then
+              echo "Tag ${TAG} exists but does not describe the current release commit." >&2
+              exit 1
+            fi
+            echo "resume=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "resume=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Type-check release tooling
+        run: bun run typecheck
+
+      - name: Run Swift tests
+        run: swift test
+
+      - name: Prepare version files
+        if: steps.state.outputs.resume != 'true'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          bun run release:prepare -- "$VERSION"
+          bun install --lockfile-only
+
+      - name: Package ad-hoc signed app
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          OUTPUT_DIR=dist bun run package:app
+          ditto -c -k --keepParent --norsrc --noextattr \
+            dist/CodexUsage.app "dist/CodexUsage-v${VERSION}.zip"
+          (
+            cd dist
+            shasum -a 256 "CodexUsage-v${VERSION}.zip" > SHA256SUMS.txt
+          )
+
+      - name: Verify release artifacts
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          codesign --verify --deep --strict --verbose=2 dist/CodexUsage.app
+          codesign -dv --verbose=4 dist/CodexUsage.app 2>&1 | grep -q "Signature=adhoc"
+          unzip -t "dist/CodexUsage-v${VERSION}.zip"
+          (
+            cd dist
+            shasum -a 256 -c SHA256SUMS.txt
+          )
+
+      - name: Commit and tag release
+        if: steps.state.outputs.resume != 'true'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json bun.lock
+          git diff --cached --check
+          git commit -m "chore: release v${VERSION}"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push --atomic origin \
+            "HEAD:refs/heads/${{ github.event.repository.default_branch }}" \
+            "refs/tags/v${VERSION}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          printf '%s\n' "$RELEASE_NOTES" > "$NOTES_FILE"
+          gh release create "v${VERSION}" \
+            "dist/CodexUsage-v${VERSION}.zip" \
+            dist/SHA256SUMS.txt \
+            --title "CodexUsage v${VERSION}" \
+            --notes-file "$NOTES_FILE" \
+            --verify-tag
+
+      - name: Verify published Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          PUBLISHED_DIR="$RUNNER_TEMP/published-release"
+          mkdir -p "$PUBLISHED_DIR"
+          gh release view "v${VERSION}" \
+            --json tagName,name,isDraft,isPrerelease,url
+          gh release download "v${VERSION}" --dir "$PUBLISHED_DIR"
+          (
+            cd "$PUBLISHED_DIR"
+            shasum -a 256 -c SHA256SUMS.txt
+            unzip -t "CodexUsage-v${VERSION}.zip"
+          )
