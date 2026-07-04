@@ -57,7 +57,7 @@ bun run package:app
 BUNDLE_IDENTIFIER=com.example.CodexUsage OUTPUT_DIR=/tmp bun run package:app
 ```
 
-默认构建会使用 ad-hoc 签名，适合本机调试，但从浏览器或 GitLab 下载后的 zip 会被 macOS 加上隔离标记，Gatekeeper 仍可能提示“Apple 无法验证 CodexUsage 是否包含恶意软件”。本机自用时可以在安装到 `/Applications` 后移除隔离标记：
+默认构建和 GitHub Actions Release 都使用 ad-hoc 签名。浏览器下载的 zip 会被 macOS 加上隔离标记，Gatekeeper 可能提示“Apple 无法验证 CodexUsage 是否包含恶意软件”。本机自用时可以在安装到 `/Applications` 后移除隔离标记：
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/CodexUsage.app
@@ -89,51 +89,34 @@ bun run package:app
 VERSION=1.2.3 BUILD_NUMBER=456 bun run package:app
 ```
 
-发布时把 GitLab token 放在环境变量里，不要写入仓库：
+## GitHub Actions 发布
 
-```sh
-read -s GITLAB_TOKEN
-export GITLAB_TOKEN
-bun run release:local
-unset GITLAB_TOKEN
-```
+正式发布由 [Release workflow](https://github.com/cixiangtao/codex-usage/actions/workflows/release.yml) 执行。在 GitHub 的 **Actions → Release → Run workflow** 中填写不带 `v` 的版本号和发布说明。工作流会：
 
-也可以在本机创建不会提交的 `.env.local`：
+1. 校验目标版本、现有 tag 和 GitHub Release 状态。
+2. 执行 TypeScript 类型检查与 Swift 测试。
+3. 更新 `package.json` / `bun.lock`，使用目标版本构建 `.app`。
+4. 进行 ad-hoc 签名，生成 `CodexUsage-vX.Y.Z.zip` 和 `SHA256SUMS.txt`。
+5. 校验签名、zip 和哈希后，创建 release commit 与 `vX.Y.Z` tag。
+6. 创建 GitHub Release、上传资产，再从 Release 下载并复核公开产物。
 
-```sh
-GITLAB_TOKEN=你的 GitLab token
-```
+工作流使用仓库自带的短期 `GITHUB_TOKEN`，不需要保存个人访问令牌。版本提交和 tag 会原子推送；如果推送成功但 Release 创建失败，可以用相同版本重新运行来补全 Release。
 
-本地发布由 `release-it` 编排。脚本会读取 `package.json` 的当前版本，交互式选择 patch、minor、major 或 custom 版本；确认后先用目标版本打包并生成 `dist/CodexUsage-vX.Y.Z.zip`。打包成功后才会更新 `package.json`/`bun.lock`、创建 release commit、打 `vX.Y.Z` tag、push，并把 zip 上传到 GitLab Generic Package Registry 后挂到对应 GitLab Release 的 asset 上。打包失败时版本文件不会被修改。`GITLAB_TOKEN` 会优先从环境变量读取，也会自动读取本机 `.env.local`；如果你只有 `PRIVATE_TOKEN`，脚本会兼容映射为 `GITLAB_TOKEN`。
-
-也可以跳过交互，直接指定版本和发布说明：
-
-```sh
-bun run release:local -- 1.2.3 "Release notes"
-```
+本地仍可运行 `bun run package:app` 验证打包，但它不会创建提交、tag 或远端 Release。
 
 ## 更新检测
 
-设置窗口会从 GitLab Release API 检查最新版本：
+设置窗口会从 GitHub Release API 检查最新版本：
 
 ```text
-https://gitlab-ee.zhenguanyu.com/api/v4/projects/cixiangtao%2Fcodex-usage/releases/permalink/latest
+https://api.github.com/repos/cixiangtao/codex-usage/releases/latest
 ```
 
 应用会读取本地 `CFBundleShortVersionString`，和最新 Release 的 tag 版本比较；tag 建议使用 `v1.2.3` 这种语义化版本。检测到新版本后，如果 Release asset 中包含 `CodexUsage*.zip`，设置页会提供“下载并安装”：应用会自动下载 zip、解压出新的 `.app`、退出当前进程、替换应用并重新打开。通过 `swift run` 启动的开发环境不能替换自身，会回退为打开发布页。
 
-如果仓库是私有项目，app 内请求 GitLab API 时没有浏览器登录态，可能会检测失败。要公开分发时，可以把项目 Release 设为可匿名读取，或改为由 GitLab Pages 发布一个公开的 `latest.json` 更新清单。
+仓库和 Release 必须保持公开，应用才可以在不保存 GitHub 凭据的情况下检查并下载更新。
 
-## GitLab 发布
-
-仓库内的 `.gitlab-ci.yml` 会在推送 tag 时执行发布流水线：
-
-1. 使用 macOS Runner 执行 `bun run package:app`。
-2. 将 `dist/CodexUsage.app` 打包成 `CodexUsage-vX.Y.Z.zip`。
-3. 上传到 GitLab Generic Package Registry。
-4. 创建 GitLab Release，并把 zip 作为 Release asset。
-
-默认构建任务使用 `macos` runner tag。需要先在 GitLab EE 上注册一台带 Swift/Xcode 工具链的 macOS Runner，并给它设置 `macos` tag。上传和 Release 任务使用 Docker 镜像运行，如果 GitLab 实例没有可用的 Docker Runner，需要给这两个任务补充合适的 runner tag，或改成在 macOS Runner 上安装 `curl`/`glab` 后执行。
+`v1.0.17` 及更早版本仍从 GitLab 检查更新。因此第一个切换到 GitHub 更新源的过渡版本需要同时发布到 GitLab 和 GitHub；在旧客户端完成迁移前，不应删除 GitLab 上的过渡 Release。
 
 ## 小组件设置
 
