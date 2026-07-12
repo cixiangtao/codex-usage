@@ -90,9 +90,25 @@ jobs:
           OUTPUT_DIR=dist bun run package:app
           ditto -c -k --keepParent --norsrc --noextattr \
             dist/CodexUsage.app "dist/CodexUsage-v${VERSION}.zip"
+
+          DMG_ROOT="$RUNNER_TEMP/dmg-root"
+          rm -rf "$DMG_ROOT"
+          mkdir -p "$DMG_ROOT"
+          ditto dist/CodexUsage.app "$DMG_ROOT/CodexUsage.app"
+          ln -s /Applications "$DMG_ROOT/Applications"
+          hdiutil create \
+            -volname CodexUsage \
+            -srcfolder "$DMG_ROOT" \
+            -ov \
+            -format UDZO \
+            "dist/CodexUsage-v${VERSION}.dmg"
+
           (
             cd dist
-            shasum -a 256 "CodexUsage-v${VERSION}.zip" > SHA256SUMS.txt
+            shasum -a 256 \
+              "CodexUsage-v${VERSION}.dmg" \
+              "CodexUsage-v${VERSION}.zip" \
+              > SHA256SUMS.txt
           )
 
       - name: Verify release artifacts
@@ -102,6 +118,26 @@ jobs:
           codesign --verify --deep --strict --verbose=2 dist/CodexUsage.app
           codesign -dv --verbose=4 dist/CodexUsage.app 2>&1 | grep -q "Signature=adhoc"
           unzip -t "dist/CodexUsage-v${VERSION}.zip"
+          hdiutil verify "dist/CodexUsage-v${VERSION}.dmg"
+
+          MOUNT_POINT="$RUNNER_TEMP/codex-usage-dmg"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach \
+            "dist/CodexUsage-v${VERSION}.dmg" \
+            -nobrowse \
+            -readonly \
+            -mountpoint "$MOUNT_POINT"
+          trap 'hdiutil detach "$MOUNT_POINT"' EXIT
+          codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/CodexUsage.app"
+          codesign -dv --verbose=4 "$MOUNT_POINT/CodexUsage.app" 2>&1 | grep -q "Signature=adhoc"
+          test -L "$MOUNT_POINT/Applications"
+          APP_VERSION="$(/usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleShortVersionString' \
+            "$MOUNT_POINT/CodexUsage.app/Contents/Info.plist")"
+          test "$APP_VERSION" = "$VERSION"
+          hdiutil detach "$MOUNT_POINT"
+          trap - EXIT
+
           (
             cd dist
             shasum -a 256 -c SHA256SUMS.txt
@@ -131,6 +167,7 @@ jobs:
           NOTES_FILE="$RUNNER_TEMP/release-notes.md"
           printf '%s\n' "$RELEASE_NOTES" > "$NOTES_FILE"
           gh release create "v${VERSION}" \
+            "dist/CodexUsage-v${VERSION}.dmg" \
             "dist/CodexUsage-v${VERSION}.zip" \
             dist/SHA256SUMS.txt \
             --title "CodexUsage v${VERSION}" \
@@ -151,4 +188,23 @@ jobs:
             cd "$PUBLISHED_DIR"
             shasum -a 256 -c SHA256SUMS.txt
             unzip -t "CodexUsage-v${VERSION}.zip"
+            hdiutil verify "CodexUsage-v${VERSION}.dmg"
           )
+
+          MOUNT_POINT="$RUNNER_TEMP/published-codex-usage-dmg"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach \
+            "$PUBLISHED_DIR/CodexUsage-v${VERSION}.dmg" \
+            -nobrowse \
+            -readonly \
+            -mountpoint "$MOUNT_POINT"
+          trap 'hdiutil detach "$MOUNT_POINT"' EXIT
+          codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/CodexUsage.app"
+          codesign -dv --verbose=4 "$MOUNT_POINT/CodexUsage.app" 2>&1 | grep -q "Signature=adhoc"
+          test -L "$MOUNT_POINT/Applications"
+          APP_VERSION="$(/usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleShortVersionString' \
+            "$MOUNT_POINT/CodexUsage.app/Contents/Info.plist")"
+          test "$APP_VERSION" = "$VERSION"
+          hdiutil detach "$MOUNT_POINT"
+          trap - EXIT

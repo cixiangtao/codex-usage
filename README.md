@@ -13,6 +13,10 @@
 - 保存共享快照，供 WidgetKit 小组件读取。
 - `WidgetExtension/` 中提供小组件源码骨架。
 
+## 下载
+
+从 [GitHub Releases](https://github.com/cixiangtao/codex-usage/releases/latest) 下载最新版 `CodexUsage-vX.Y.Z.dmg`，打开后将 `CodexUsage.app` 拖入“应用程序”即可。Release 同时提供供应用内自动更新使用的 ZIP 包和 `SHA256SUMS.txt`。
+
 ## 数据来源说明
 
 应用会优先读取 `~/.codex/auth.json` 中 Codex CLI 已保存的 OAuth access token，并直接请求 `chatgpt.com` 的 Codex 用量接口获取 5h / 7d 用量窗口和重置卡信息。它不会读取、保存或上传密码，也不会把 token 写入应用自己的配置。
@@ -57,7 +61,7 @@ bun run package:app
 BUNDLE_IDENTIFIER=com.example.CodexUsage OUTPUT_DIR=/tmp bun run package:app
 ```
 
-默认构建和 GitHub Actions Release 都使用 ad-hoc 签名。浏览器下载的 zip 会被 macOS 加上隔离标记，Gatekeeper 可能提示“Apple 无法验证 CodexUsage 是否包含恶意软件”。本机自用时可以在安装到 `/Applications` 后移除隔离标记：
+默认构建和 GitHub Actions Release 都使用 ad-hoc 签名。浏览器下载的 DMG 或 ZIP 会被 macOS 加上隔离标记，Gatekeeper 可能提示“Apple 无法验证 CodexUsage 是否包含恶意软件”。本机自用时可以在安装到 `/Applications` 后移除隔离标记：
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/CodexUsage.app
@@ -81,7 +85,7 @@ APPLE_NOTARY_KEYCHAIN_PROFILE=codex-usage-notary \
 bun run package:app
 ```
 
-脚本会在签名前清理常见 bundle 扩展属性，使用 hardened runtime 签名，提交 Apple 公证，staple 公证票据，并执行 Gatekeeper 校验。CI 或本地发布生成 zip 时会禁用资源叉和扩展属性，避免把本机 quarantine/provenance 元数据写进发布包。
+脚本会在签名前清理常见 bundle 扩展属性，使用 hardened runtime 签名，提交 Apple 公证，staple 公证票据，并执行 Gatekeeper 校验。CI 生成 ZIP 时会禁用资源叉和扩展属性，避免把构建机的 quarantine/provenance 元数据写进发布包。
 
 发布版本时建议同时写入 app 版本号和构建号：
 
@@ -96,8 +100,8 @@ VERSION=1.2.3 BUILD_NUMBER=456 bun run package:app
 1. 校验目标版本、现有 tag 和 GitHub Release 状态。
 2. 执行 TypeScript 类型检查与 Swift 测试。
 3. 更新 `package.json` / `bun.lock`，使用目标版本构建 `.app`。
-4. 进行 ad-hoc 签名，生成 `CodexUsage-vX.Y.Z.zip` 和 `SHA256SUMS.txt`。
-5. 校验签名、zip 和哈希后，创建 release commit 与 `vX.Y.Z` tag。
+4. 进行 ad-hoc 签名，生成 `CodexUsage-vX.Y.Z.dmg`、自动更新用 ZIP 和 `SHA256SUMS.txt`。
+5. 校验签名、DMG、ZIP 和哈希后，创建 release commit 与 `vX.Y.Z` tag。
 6. 创建 GitHub Release、上传资产，再从 Release 下载并复核公开产物。
 
 工作流使用仓库自带的短期 `GITHUB_TOKEN`，不需要保存个人访问令牌。版本提交和 tag 会原子推送；如果推送成功但 Release 创建失败，可以用相同版本重新运行来补全 Release。
@@ -115,8 +119,6 @@ https://api.github.com/repos/cixiangtao/codex-usage/releases/latest
 应用会读取本地 `CFBundleShortVersionString`，和最新 Release 的 tag 版本比较；tag 建议使用 `v1.2.3` 这种语义化版本。检测到新版本后，如果 Release asset 中包含 `CodexUsage*.zip`，设置页会提供“下载并安装”：应用会自动下载 zip、解压出新的 `.app`、退出当前进程、替换应用并重新打开。通过 `swift run` 启动的开发环境不能替换自身，会回退为打开发布页。
 
 仓库和 Release 必须保持公开，应用才可以在不保存 GitHub 凭据的情况下检查并下载更新。
-
-`v1.0.17` 及更早版本仍从 GitLab 检查更新。因此第一个切换到 GitHub 更新源的过渡版本需要同时发布到 GitLab 和 GitHub；在旧客户端完成迁移前，不应删除 GitLab 上的过渡 Release。
 
 ## 小组件设置
 
