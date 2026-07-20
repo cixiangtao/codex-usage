@@ -93,18 +93,20 @@ enum StatusBarIconCatalog {
         title: String,
         subtitle: String
     ) -> StatusBarIconDescriptor {
-        StatusBarIconDescriptor(
+        let resourceBundle = AppResources.bundle
+
+        return StatusBarIconDescriptor(
             id: "builtin.\(name)",
             title: title,
             subtitle: subtitle,
             source: .image(
-                Bundle.module.url(
+                resourceBundle.url(
                     forResource: name,
                     withExtension: "gif",
                     subdirectory: "StatusBarGIFs"
                 )
-                    ?? Bundle.module.url(forResource: name, withExtension: "gif")
-                    ?? Bundle.module.bundleURL
+                    ?? resourceBundle.url(forResource: name, withExtension: "gif")
+                    ?? resourceBundle.bundleURL
             )
         )
     }

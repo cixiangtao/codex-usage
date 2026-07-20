@@ -21,11 +21,7 @@ enum AppIcon {
             return image
         }
 
-        #if DEBUG
-        return iconImage(in: .module)
-        #else
-        return nil
-        #endif
+        return iconImage(in: AppResources.bundle)
     }
 
     private static func iconImage(in bundle: Bundle) -> NSImage? {

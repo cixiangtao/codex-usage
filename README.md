@@ -101,7 +101,7 @@ VERSION=1.2.3 BUILD_NUMBER=456 bun run package:app
 2. 执行 TypeScript 类型检查与 Swift 测试。
 3. 更新 `package.json` / `bun.lock`，使用目标版本构建 `.app`。
 4. 进行 ad-hoc 签名，生成 `CodexUsage-vX.Y.Z.dmg`、自动更新用 ZIP 和 `SHA256SUMS.txt`。
-5. 校验签名、DMG、ZIP 和哈希后，创建 release commit 与 `vX.Y.Z` tag。
+5. 校验签名、DMG、ZIP、哈希和应用启动后，创建 release commit 与 `vX.Y.Z` tag。
 6. 创建 GitHub Release、上传资产，再从 Release 下载并复核公开产物。
 
 工作流使用仓库自带的短期 `GITHUB_TOKEN`，不需要保存个人访问令牌。版本提交和 tag 会原子推送；如果推送成功但 Release 创建失败，可以用相同版本重新运行来补全 Release。
