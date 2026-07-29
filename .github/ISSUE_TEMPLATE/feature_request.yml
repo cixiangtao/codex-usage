@@ -1,0 +1,39 @@
+name: Feature request
+description: 建议具有明确用户价值的新能力或改进
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索现有 Issue，确认没有重复建议。
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 请先描述用户场景和当前困难，不要只写功能名称。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 说明你期望的交互、系统集成或数据行为。
+    validations:
+      required: true
+  - type: textarea
+    id: differentiation
+    attributes:
+      label: 差异价值
+      description: 说明它相较 codex-bar 或其他同类工具，在设计、运行行为、数据来源、原生集成或工作流上有什么不同或更好之处。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案
+      description: 说明你尝试过的替代方式或可以接受的简化方案。

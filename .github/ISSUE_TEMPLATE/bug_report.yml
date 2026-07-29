@@ -1,0 +1,74 @@
+name: Bug report
+description: 报告可复现的 CodexUsage 问题
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。涉及凭据、隐私、自动更新或发布链安全的问题，请改用私密漏洞报告。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索现有 Issue，确认没有重复报告。
+          required: true
+        - label: 我已移除日志、截图中的 access token、账号信息和其他敏感内容。
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: CodexUsage 版本
+      description: 可在应用设置或 GitHub Release 中确认，例如 1.0.19。
+      placeholder: 1.0.19
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS 版本
+      placeholder: macOS 15.6
+    validations:
+      required: true
+  - type: dropdown
+    id: launch-method
+    attributes:
+      label: 运行方式
+      options:
+        - GitHub Release DMG
+        - GitHub Release ZIP / 自动更新
+        - swift run CodexUsage
+        - bun run dev:watch
+        - 其他本地构建
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 说明实际发生了什么，以及它对使用造成的影响。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开……
+        2. 点击……
+        3. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: 补充信息
+      description: 可提供已经脱敏的日志、截图、数据来源状态或其他上下文。

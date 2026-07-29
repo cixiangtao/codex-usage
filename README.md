@@ -128,3 +128,11 @@ https://api.github.com/repos/cixiangtao/codex-usage/releases/latest
 4. 保持 `SharedSnapshotStore.appGroupIdentifier` 中的 group id 一致。
 
 没有 App Group entitlement 时，状态栏 app 仍可运行，并会把快照存在标准 `UserDefaults`；小组件需要 App Group 才能读取 app 写入的最新快照。
+
+## 参与贡献与问题反馈
+
+普通缺陷和功能建议可以通过 [GitHub Issues](https://github.com/cixiangtao/codex-usage/issues) 提交。参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)；涉及凭据、隐私、自动更新或发布链的问题请按照 [SECURITY.md](SECURITY.md) 私密报告，不要创建公开 Issue。
+
+## 许可证
+
+CodexUsage 采用 [MIT License](LICENSE)，Copyright © 2026 cixiangtao。内置第三方资源的来源和许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
