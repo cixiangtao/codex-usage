@@ -146,7 +146,7 @@ const infoPlist = () => `<?xml version="1.0" encoding="UTF-8"?>
   <key>LSUIElement</key>
   <true/>
   <key>NSHumanReadableCopyright</key>
-  <string>Copyright © 2026 anys.</string>
+  <string>Copyright © 2026 cixiangtao.</string>
 </dict>
 </plist>
 `;
@@ -205,6 +205,8 @@ const packageApp = async () => {
   const appMacOSDir = resolve(appPath, "Contents", "MacOS");
   const appResourcesDir = resolve(appPath, "Contents", "Resources");
   const sourceIconPath = resolve(rootDir, "Sources", "CodexUsage", "Resources", "AppIcon.icns");
+  const licensePath = resolve(rootDir, "LICENSE");
+  const thirdPartyNoticesPath = resolve(rootDir, "THIRD_PARTY_NOTICES.md");
   const resourceBundleName = "CodexUsage_CodexUsage.bundle";
   const resourceBundlePath = resolve(binDir, resourceBundleName);
 
@@ -219,6 +221,12 @@ const packageApp = async () => {
   } catch {
     fail(`Swift resource bundle not found at ${resourceBundlePath}`);
   }
+  try {
+    await access(licensePath);
+    await access(thirdPartyNoticesPath);
+  } catch {
+    fail("LICENSE or THIRD_PARTY_NOTICES.md is missing");
+  }
 
   await rm(appPath, { recursive: true, force: true });
   await mkdir(appMacOSDir, { recursive: true });
@@ -226,6 +234,8 @@ const packageApp = async () => {
 
   await copyFile(executablePath, resolve(appMacOSDir, appName));
   await copyFile(sourceIconPath, resolve(appResourcesDir, "AppIcon.icns"));
+  await copyFile(licensePath, resolve(appResourcesDir, "LICENSE"));
+  await copyFile(thirdPartyNoticesPath, resolve(appResourcesDir, "THIRD_PARTY_NOTICES.md"));
   await cp(
     resourceBundlePath,
     resolve(appResourcesDir, resourceBundleName),

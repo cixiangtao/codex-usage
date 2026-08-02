@@ -117,6 +117,9 @@ jobs:
         run: |
           codesign --verify --deep --strict --verbose=2 dist/CodexUsage.app
           codesign -dv --verbose=4 dist/CodexUsage.app 2>&1 | grep -q "Signature=adhoc"
+          cmp LICENSE dist/CodexUsage.app/Contents/Resources/LICENSE
+          cmp THIRD_PARTY_NOTICES.md \
+            dist/CodexUsage.app/Contents/Resources/THIRD_PARTY_NOTICES.md
           bun run verify:app-launch -- dist/CodexUsage.app
           unzip -t "dist/CodexUsage-v${VERSION}.zip"
           hdiutil verify "dist/CodexUsage-v${VERSION}.dmg"
@@ -131,6 +134,9 @@ jobs:
           trap 'hdiutil detach "$MOUNT_POINT"' EXIT
           codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/CodexUsage.app"
           codesign -dv --verbose=4 "$MOUNT_POINT/CodexUsage.app" 2>&1 | grep -q "Signature=adhoc"
+          cmp LICENSE "$MOUNT_POINT/CodexUsage.app/Contents/Resources/LICENSE"
+          cmp THIRD_PARTY_NOTICES.md \
+            "$MOUNT_POINT/CodexUsage.app/Contents/Resources/THIRD_PARTY_NOTICES.md"
           bun run verify:app-launch -- "$MOUNT_POINT/CodexUsage.app"
           test -L "$MOUNT_POINT/Applications"
           APP_VERSION="$(/usr/libexec/PlistBuddy \
@@ -203,6 +209,9 @@ jobs:
           trap 'hdiutil detach "$MOUNT_POINT"' EXIT
           codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/CodexUsage.app"
           codesign -dv --verbose=4 "$MOUNT_POINT/CodexUsage.app" 2>&1 | grep -q "Signature=adhoc"
+          cmp LICENSE "$MOUNT_POINT/CodexUsage.app/Contents/Resources/LICENSE"
+          cmp THIRD_PARTY_NOTICES.md \
+            "$MOUNT_POINT/CodexUsage.app/Contents/Resources/THIRD_PARTY_NOTICES.md"
           bun run verify:app-launch -- "$MOUNT_POINT/CodexUsage.app"
           test -L "$MOUNT_POINT/Applications"
           APP_VERSION="$(/usr/libexec/PlistBuddy \

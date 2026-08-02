@@ -45,4 +45,7 @@ jobs:
         run: |
           codesign --verify --deep --strict --verbose=2 dist/CodexUsage.app
           codesign -dv --verbose=4 dist/CodexUsage.app 2>&1 | grep -q "Signature=adhoc"
+          cmp LICENSE dist/CodexUsage.app/Contents/Resources/LICENSE
+          cmp THIRD_PARTY_NOTICES.md \
+            dist/CodexUsage.app/Contents/Resources/THIRD_PARTY_NOTICES.md
           bun run verify:app-launch -- dist/CodexUsage.app
