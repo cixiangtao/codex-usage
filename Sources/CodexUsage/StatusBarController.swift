@@ -87,6 +87,7 @@ final class StatusBarController: NSObject {
             return
         }
 
+        viewModel.scheduleTrendRefresh(settings: settings)
         resizePopover()
         popover.show(
             relativeTo: button.bounds,

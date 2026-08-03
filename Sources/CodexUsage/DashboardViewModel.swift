@@ -12,6 +12,7 @@ final class DashboardViewModel: ObservableObject {
     private let sharedStore: SharedSnapshotStore
     private let notificationManager: NotificationManager
     private let trendRefreshInterval: TimeInterval
+    private let now: @Sendable () -> Date
     private var refreshTask: Task<Void, Never>?
     private var trendRefreshTask: Task<Void, Never>?
     private var isRefreshingTrend = false
@@ -23,7 +24,8 @@ final class DashboardViewModel: ObservableObject {
         trendProvider: UsageProvider? = nil,
         sharedStore: SharedSnapshotStore = SharedSnapshotStore(),
         notificationManager: NotificationManager = NotificationManager(),
-        trendRefreshInterval: TimeInterval = 10 * 60
+        trendRefreshInterval: TimeInterval = 10 * 60,
+        now: @escaping @Sendable () -> Date = Date.init
     ) {
         if let provider {
             quotaProvider = provider
@@ -35,6 +37,7 @@ final class DashboardViewModel: ObservableObject {
         self.sharedStore = sharedStore
         self.notificationManager = notificationManager
         self.trendRefreshInterval = max(60, trendRefreshInterval)
+        self.now = now
         snapshot = sharedStore.load() ?? .empty
     }
 
@@ -132,10 +135,12 @@ final class DashboardViewModel: ObservableObject {
         guard !isRefreshingTrend else { return }
 
         let codexHomePath = settings.codexHomePath
+        let referenceDate = now()
         if !force,
            lastTrendCodexHomePath == codexHomePath,
            let lastTrendRefreshAt,
-           Date().timeIntervalSince(lastTrendRefreshAt) < trendRefreshInterval {
+           Calendar.current.isDate(lastTrendRefreshAt, inSameDayAs: referenceDate),
+           referenceDate.timeIntervalSince(lastTrendRefreshAt) < trendRefreshInterval {
             return
         }
 
@@ -145,13 +150,13 @@ final class DashboardViewModel: ObservableObject {
         do {
             let nextPoints = try await trendProvider.fetchTrendPoints(
                 codexHomePath: codexHomePath,
-                relativeTo: Date()
+                relativeTo: referenceDate
             )
             if trendPoints != nextPoints {
                 trendPoints = nextPoints
             }
             lastTrendCodexHomePath = codexHomePath
-            lastTrendRefreshAt = Date()
+            lastTrendRefreshAt = referenceDate
         } catch is CancellationError {
             return
         } catch {

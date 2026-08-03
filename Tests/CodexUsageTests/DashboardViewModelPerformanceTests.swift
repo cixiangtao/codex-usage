@@ -117,6 +117,38 @@ struct DashboardViewModelPerformanceTests {
         #expect(viewModel.trendPoints == changedPathPoints)
     }
 
+    @Test("Trend cache expires immediately when the local calendar day changes")
+    @MainActor
+    func trendRefreshExpiresAtDayBoundary() async throws {
+        let fixture = SettingsFixture(codexHomePath: "/tmp/codex-usage-trend-day-boundary")
+        defer { fixture.remove() }
+
+        let calendar = Calendar.current
+        let firstDay = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 2,
+            hour: 23,
+            minute: 59
+        )))
+        let nextDay = try #require(calendar.date(byAdding: .minute, value: 2, to: firstDay))
+        let clock = DashboardTestClock(now: firstDay)
+        let provider = DashboardUsageProviderSpy(trendResponses: [[], []])
+        let viewModel = DashboardViewModel(
+            provider: provider,
+            notificationManager: NotificationManager(defaults: fixture.defaults),
+            trendRefreshInterval: 10 * 60,
+            now: { clock.now }
+        )
+
+        await viewModel.refreshTrendIfNeeded(settings: fixture.settings)
+        clock.now = nextDay
+        await viewModel.refreshTrendIfNeeded(settings: fixture.settings)
+
+        #expect(await provider.trendCallCount() == 2)
+        #expect(await provider.trendReferenceDates() == [firstDay, nextDay])
+    }
+
     @Test("A cold trend scan does not block quota refresh")
     @MainActor
     func trendAndQuotaUseIndependentProviders() async {
@@ -184,6 +216,14 @@ private final class SettingsFixture {
     }
 }
 
+private final class DashboardTestClock: @unchecked Sendable {
+    var now: Date
+
+    init(now: Date) {
+        self.now = now
+    }
+}
+
 private actor DashboardUsageProviderSpy: UsageProvider {
     static let snapshotFailureDescription = "Snapshot refresh failed in test"
 
@@ -194,6 +234,7 @@ private actor DashboardUsageProviderSpy: UsageProvider {
 
     private var snapshotCalls = 0
     private var trendCalls = 0
+    private var trendDates: [Date] = []
     private var blockedTrendContinuations: [CheckedContinuation<Void, Never>] = []
 
     init(
@@ -221,6 +262,7 @@ private actor DashboardUsageProviderSpy: UsageProvider {
         relativeTo date: Date
     ) async throws -> [UsageTrendPoint] {
         trendCalls += 1
+        trendDates.append(date)
         let responseIndex = min(trendCalls - 1, trendResponses.count - 1)
         let response = trendResponses[responseIndex]
 
@@ -240,6 +282,10 @@ private actor DashboardUsageProviderSpy: UsageProvider {
 
     func trendCallCount() -> Int {
         trendCalls
+    }
+
+    func trendReferenceDates() -> [Date] {
+        trendDates
     }
 
     func releaseBlockedTrendRequests() {
