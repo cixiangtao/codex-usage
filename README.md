@@ -13,6 +13,18 @@
 - 保存共享快照，供 WidgetKit 小组件读取。
 - `WidgetExtension/` 中提供小组件源码骨架。
 
+## 界面预览
+
+<p align="center">
+  <img src="docs/images/overview.png" alt="CodexUsage 用量面板" width="360">
+</p>
+
+<p align="center"><sub>主面板使用脱敏演示数据，账号信息已使用不可逆遮罩处理。</sub></p>
+
+| 状态栏展示设置 | 动画图标设置 |
+| --- | --- |
+| <img src="docs/images/status-bar-settings.png" alt="状态栏展示设置"> | <img src="docs/images/icon-settings.png" alt="动画图标设置"> |
+
 ## 下载
 
 从 [GitHub Releases](https://github.com/cixiangtao/codex-usage/releases/latest) 下载最新版 `CodexUsage-vX.Y.Z.dmg`，打开后将 `CodexUsage.app` 拖入“应用程序”即可。Release 同时提供供应用内自动更新使用的 ZIP 包和 `SHA256SUMS.txt`。
