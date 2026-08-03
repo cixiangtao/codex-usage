@@ -632,7 +632,10 @@ struct UsageTrendChartView: View {
 
                     Spacer()
 
-                    Text(readoutText(hoveredPoint: hoveredPoint, latest: latest))
+                    Text(readoutText(
+                        hoveredPoint: hoveredPoint,
+                        displayedPoints: displayedPoints
+                    ))
                         .font(.caption.monospacedDigit().weight(.medium))
                         .foregroundStyle(.secondary)
                 }
@@ -690,16 +693,18 @@ struct UsageTrendChartView: View {
 
     private func readoutText(
         hoveredPoint: UsageTrendPoint?,
-        latest: UsageTrendPoint?
+        displayedPoints: [UsageTrendPoint]
     ) -> String {
-        guard let hoveredPoint else { return summaryText(latest: latest) }
+        guard let hoveredPoint else {
+            return "日均 \(UsageFormatters.compactTokens(Self.averageTokens(in: displayedPoints)))"
+        }
         return "\(dayText(for: hoveredPoint.capturedAt)) \(UsageFormatters.compactTokens(hoveredPoint.totalTokens))"
     }
 
-    private func summaryText(latest: UsageTrendPoint?) -> String {
-        guard let latest else { return "--" }
-        let prefix = Calendar.current.isDateInToday(latest.capturedAt) ? "今日" : "最近"
-        return "\(prefix) \(UsageFormatters.compactTokens(latest.totalTokens))"
+    static func averageTokens(in points: [UsageTrendPoint]) -> Int {
+        guard !points.isEmpty else { return 0 }
+        let total = points.reduce(0) { $0 + $1.totalTokens }
+        return Int((Double(total) / Double(points.count)).rounded())
     }
 
     private var validRangeDays: Int {
