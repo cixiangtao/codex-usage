@@ -7,8 +7,9 @@ protocol UsageProvider: Sendable {
 }
 
 actor CodexUsageProvider: UsageProvider {
-    private static let trendCacheSchemaVersion = 2
+    private static let trendCacheSchemaVersion = 3
     private static let tokenCountMarker = Data("\"token_count\"".utf8)
+    private static let sessionMetaMarker = Data("\"session_meta\"".utf8)
     private static let boundaryFingerprintByteCount = 4_096
 
     private let generalUsageLimitId = "codex"
@@ -255,6 +256,38 @@ actor CodexUsageProvider: UsageProvider {
             nextFiles[file.cacheKey] = nextEntry.pruningDays(before: firstDay)
         }
 
+        // A recently active fork can point at a parent whose file has not changed
+        // within the trend window. Load only those ancestor files so their copied
+        // token prefix can still be recognized without rescanning every old log.
+        var pendingParentSessionIDs = Set(
+            files
+                .filter { $0.modifiedAt >= firstDay }
+                .compactMap { nextFiles[$0.cacheKey]?.parentSessionID }
+        )
+        var resolvedParentSessionIDs: Set<String> = []
+        while let parentSessionID = pendingParentSessionIDs.subtracting(resolvedParentSessionIDs).first {
+            resolvedParentSessionIDs.insert(parentSessionID)
+            guard let parentFile = files.first(where: { $0.sessionID == parentSessionID }),
+                  var parentEntry = nextFiles[parentFile.cacheKey] else {
+                continue
+            }
+
+            if parentEntry.tokenRecords.isEmpty, parentFile.modifiedAt < firstDay {
+                parentEntry = try refreshedCacheEntry(
+                    for: parentFile,
+                    existing: nil,
+                    accountScope: accountScope,
+                    firstDay: firstDay,
+                    metrics: &metrics
+                )
+                nextFiles[parentFile.cacheKey] = parentEntry.pruningDays(before: firstDay)
+            }
+
+            if let ancestorSessionID = parentEntry.parentSessionID {
+                pendingParentSessionIDs.insert(ancestorSessionID)
+            }
+        }
+
         cache.files = nextFiles
         loadedTrendCache = cache
         if cache != originalCache {
@@ -266,7 +299,15 @@ actor CodexUsageProvider: UsageProvider {
         for file in files where file.modifiedAt >= firstDay {
             guard let entry = nextFiles[file.cacheKey] else { continue }
             sawTokenEvents = sawTokenEvents || entry.sawTokenEvents
-            for (dayTimestamp, total) in entry.totalsByDay where total > 0 {
+        }
+
+        let copiedPrefixCounts = copiedTokenPrefixCounts(in: nextFiles)
+        for file in files where file.modifiedAt >= firstDay {
+            guard let entry = nextFiles[file.cacheKey] else { continue }
+            let copiedPrefixCount = copiedPrefixCounts[file.cacheKey, default: 0]
+            for record in entry.tokenRecords.dropFirst(copiedPrefixCount) where record.countedDelta > 0 {
+                let dayTimestamp = record.dayTimestamp
+                let total = record.countedDelta
                 let day = Date(timeIntervalSince1970: TimeInterval(dayTimestamp))
                 guard day >= firstDay, day <= latestDay else { continue }
                 totalsByDay[day, default: 0] += total
@@ -503,6 +544,9 @@ actor CodexUsageProvider: UsageProvider {
             parsedBoundaryFingerprint: nil,
             lastCumulativeTotalTokens: nil,
             lastTokenEventFingerprint: nil,
+            sessionID: file.sessionID,
+            parentSessionID: nil,
+            tokenRecords: [],
             totalsByDay: [:],
             sawTokenEvents: false
         )
@@ -552,6 +596,9 @@ actor CodexUsageProvider: UsageProvider {
                 parsedBoundaryFingerprint: nil,
                 lastCumulativeTotalTokens: nil,
                 lastTokenEventFingerprint: nil,
+                sessionID: file.sessionID,
+                parentSessionID: nil,
+                tokenRecords: [],
                 totalsByDay: [:],
                 sawTokenEvents: false
             )
@@ -566,7 +613,9 @@ actor CodexUsageProvider: UsageProvider {
                 accountScope: accountScope,
                 firstDay: firstDay,
                 previousCumulativeTotalTokens: entry.lastCumulativeTotalTokens,
-                previousTokenEventFingerprint: entry.lastTokenEventFingerprint
+                previousTokenEventFingerprint: entry.lastTokenEventFingerprint,
+                previousSessionID: entry.sessionID,
+                previousParentSessionID: entry.parentSessionID
             )
             metrics.bytesRead += scan.bytesRead
 
@@ -578,6 +627,9 @@ actor CodexUsageProvider: UsageProvider {
             entry.parsedBoundaryFingerprint = scan.parsedBoundaryFingerprint
             entry.lastCumulativeTotalTokens = scan.lastCumulativeTotalTokens
             entry.lastTokenEventFingerprint = scan.lastTokenEventFingerprint
+            entry.sessionID = scan.sessionID ?? entry.sessionID ?? file.sessionID
+            entry.parentSessionID = scan.parentSessionID ?? entry.parentSessionID
+            entry.tokenRecords.append(contentsOf: scan.tokenRecords)
             entry.sawTokenEvents = entry.sawTokenEvents || scan.sawTokenEvents
             for (day, total) in scan.totalsByDay {
                 entry.totalsByDay[day, default: 0] += total
@@ -599,7 +651,9 @@ actor CodexUsageProvider: UsageProvider {
         accountScope: LocalAccountScope?,
         firstDay: Date,
         previousCumulativeTotalTokens: Int?,
-        previousTokenEventFingerprint: String?
+        previousTokenEventFingerprint: String?,
+        previousSessionID: String?,
+        previousParentSessionID: String?
     ) throws -> JSONLScanResult {
         guard startOffset <= file.size else {
             throw TrendCacheError.fileChangedDuringRead
@@ -619,6 +673,9 @@ actor CodexUsageProvider: UsageProvider {
         var sawTokenEvents = false
         var lastCumulativeTotalTokens = previousCumulativeTotalTokens
         var lastTokenEventFingerprint = previousTokenEventFingerprint
+        var sessionID = previousSessionID
+        var parentSessionID = previousParentSessionID
+        var tokenRecords: [CachedTokenRecord] = []
         let calendar = Calendar.current
 
         while remainingByteCount > 0 {
@@ -639,7 +696,17 @@ actor CodexUsageProvider: UsageProvider {
                     let line = buffer[consumedThrough..<newline]
                     consumedThrough = buffer.index(after: newline)
 
-                    guard containsTokenCountMarker(line) else {
+                    let containsTokenCount = containsTokenCountMarker(line)
+                    if !containsTokenCount,
+                       line.range(of: Self.sessionMetaMarker) != nil,
+                       let metadata = parseSessionMetadata(from: Data(line)) {
+                        // Forked logs can replay the parent's session_meta later in
+                        // the file. The first metadata record owns this JSONL.
+                        sessionID = sessionID ?? metadata.sessionID
+                        parentSessionID = parentSessionID ?? metadata.parentSessionID
+                    }
+
+                    guard containsTokenCount else {
                         continue
                     }
 
@@ -656,15 +723,23 @@ actor CodexUsageProvider: UsageProvider {
                         lastCumulativeTotalTokens: &lastCumulativeTotalTokens,
                         lastTokenEventFingerprint: &lastTokenEventFingerprint
                     )
-                    guard event.timestamp >= firstDay,
-                          tokenDelta > 0,
-                          isInCurrentLocalAccountScope(event.snapshot, scope: accountScope) else {
+                    guard isInCurrentLocalAccountScope(event.snapshot, scope: accountScope) else {
                         continue
                     }
 
                     let day = calendar.startOfDay(for: event.timestamp)
                     let dayTimestamp = Int(day.timeIntervalSince1970)
-                    totalsByDay[dayTimestamp, default: 0] += tokenDelta
+                    tokenRecords.append(
+                        CachedTokenRecord(
+                            dayTimestamp: dayTimestamp,
+                            cumulativeTotalTokens: event.cumulativeTotalTokens,
+                            reportedLastTokens: event.tokenDelta,
+                            countedDelta: tokenDelta
+                        )
+                    )
+                    if event.timestamp >= firstDay, tokenDelta > 0 {
+                        totalsByDay[dayTimestamp, default: 0] += tokenDelta
+                    }
                 }
 
                 if consumedThrough > buffer.startIndex {
@@ -696,9 +771,47 @@ actor CodexUsageProvider: UsageProvider {
             ),
             lastCumulativeTotalTokens: lastCumulativeTotalTokens,
             lastTokenEventFingerprint: lastTokenEventFingerprint,
+            sessionID: sessionID,
+            parentSessionID: parentSessionID,
+            tokenRecords: tokenRecords,
             totalsByDay: totalsByDay,
             sawTokenEvents: sawTokenEvents
         )
+    }
+
+    private func copiedTokenPrefixCounts(
+        in entriesByCacheKey: [String: CachedJSONLFile]
+    ) -> [String: Int] {
+        var entriesBySessionID: [String: CachedJSONLFile] = [:]
+        for entry in entriesByCacheKey.values {
+            if let sessionID = entry.sessionID {
+                entriesBySessionID[sessionID] = entry
+            }
+        }
+
+        var result: [String: Int] = [:]
+        for (cacheKey, child) in entriesByCacheKey {
+            guard let parentSessionID = child.parentSessionID,
+                  let parent = entriesBySessionID[parentSessionID],
+                  !child.tokenRecords.isEmpty,
+                  !parent.tokenRecords.isEmpty else {
+                continue
+            }
+
+            let maximumPrefixCount = min(child.tokenRecords.count, parent.tokenRecords.count)
+            var prefixCount = 0
+            while prefixCount < maximumPrefixCount,
+                  child.tokenRecords[prefixCount].matchesCopiedState(
+                      parent.tokenRecords[prefixCount]
+                  ) {
+                prefixCount += 1
+            }
+
+            if prefixCount > 0 {
+                result[cacheKey] = prefixCount
+            }
+        }
+        return result
     }
 
     private func countedTokenDelta(
@@ -842,6 +955,46 @@ actor CodexUsageProvider: UsageProvider {
         bytes.range(of: Self.tokenCountMarker) != nil
     }
 
+    private func parseSessionMetadata(from data: Data) -> ParsedSessionMetadata? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              root["type"] as? String == "session_meta",
+              let payload = root["payload"] as? [String: Any] else {
+            return nil
+        }
+
+        let sessionID = normalizedSessionID(
+            payload["id"] as? String ?? payload["session_id"] as? String
+        )
+        let parentSessionID = normalizedSessionID(
+            payload["forked_from_id"] as? String
+                ?? payload["parent_thread_id"] as? String
+                ?? inferredParentSessionID(from: payload, sessionID: sessionID)
+        )
+        return ParsedSessionMetadata(
+            sessionID: sessionID,
+            parentSessionID: parentSessionID
+        )
+    }
+
+    private func inferredParentSessionID(
+        from payload: [String: Any],
+        sessionID: String?
+    ) -> String? {
+        guard let owningSessionID = normalizedSessionID(payload["session_id"] as? String),
+              owningSessionID != sessionID else {
+            return nil
+        }
+        return owningSessionID
+    }
+
+    private func normalizedSessionID(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        return value.lowercased()
+    }
+
     private static func fileIdentity(_ identifier: Any?, fallbackURL: URL) -> String {
         if let data = identifier as? Data {
             return data.base64EncodedString()
@@ -860,7 +1013,7 @@ actor CodexUsageProvider: UsageProvider {
 
         return baseURL
             .appendingPathComponent("CodexUsage", isDirectory: true)
-            .appendingPathComponent("LocalTrendIndex-v2.json")
+            .appendingPathComponent("LocalTrendIndex-v3.json")
     }
 
     private func newestTokenEvent(in files: [JSONLFile]) throws -> ParsedTokenEvent? {
@@ -1259,6 +1412,11 @@ private struct ParsedTokenEvent {
     var snapshot: CodexUsageSnapshot
 }
 
+private struct ParsedSessionMetadata {
+    var sessionID: String?
+    var parentSessionID: String?
+}
+
 private struct JSONLTrendResult {
     var points: [UsageTrendPoint]
     var sawTokenEvents: Bool
@@ -1306,6 +1464,9 @@ private struct CachedJSONLFile: Codable, Equatable {
     var parsedBoundaryFingerprint: String?
     var lastCumulativeTotalTokens: Int?
     var lastTokenEventFingerprint: String?
+    var sessionID: String?
+    var parentSessionID: String?
+    var tokenRecords: [CachedTokenRecord]
     var totalsByDay: [Int: Int]
     var sawTokenEvents: Bool
 
@@ -1319,12 +1480,31 @@ private struct CachedJSONLFile: Codable, Equatable {
     }
 }
 
+private struct CachedTokenRecord: Codable, Equatable {
+    var dayTimestamp: Int
+    var cumulativeTotalTokens: Int?
+    var reportedLastTokens: Int
+    var countedDelta: Int
+
+    func matchesCopiedState(_ other: CachedTokenRecord) -> Bool {
+        guard let cumulativeTotalTokens,
+              let otherCumulativeTotalTokens = other.cumulativeTotalTokens else {
+            return false
+        }
+        return cumulativeTotalTokens == otherCumulativeTotalTokens
+            && reportedLastTokens == other.reportedLastTokens
+    }
+}
+
 private struct JSONLScanResult {
     var committedOffset: UInt64
     var bytesRead: UInt64
     var parsedBoundaryFingerprint: String
     var lastCumulativeTotalTokens: Int?
     var lastTokenEventFingerprint: String?
+    var sessionID: String?
+    var parentSessionID: String?
+    var tokenRecords: [CachedTokenRecord]
     var totalsByDay: [Int: Int]
     var sawTokenEvents: Bool
 }
@@ -1707,15 +1887,18 @@ private struct JSONLFile {
     var fileIdentity: String
 
     var cacheKey: String {
-        let stem = url.deletingPathExtension().lastPathComponent
-        if stem.count >= 36 {
-            let candidate = String(stem.suffix(36))
-            if let sessionID = UUID(uuidString: candidate) {
-                return "session:\(sessionID.uuidString.lowercased())"
-            }
+        if let sessionID {
+            return "session:\(sessionID)"
         }
 
         return "file:\(fileIdentity)"
+    }
+
+    var sessionID: String? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard stem.count >= 36 else { return nil }
+        let candidate = String(stem.suffix(36))
+        return UUID(uuidString: candidate)?.uuidString.lowercased()
     }
 }
 
