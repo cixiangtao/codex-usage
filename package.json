@@ -9,7 +9,6 @@
     "dev": "bun scripts/dev-watch.ts",
     "dev:watch": "bun dev",
     "package:app": "bun scripts/package-app.ts",
-    "release:prepare": "bun scripts/prepare-release.ts",
     "typecheck": "bunx tsc --noEmit",
     "verify:app-launch": "bun scripts/verify-app-launch.ts"
   },
