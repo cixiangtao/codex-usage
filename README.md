@@ -107,13 +107,14 @@ VERSION=1.2.3 BUILD_NUMBER=456 bun run package:app
 
 ## GitHub Actions 发布
 
-正式发布必须先通过专用 Release PR。完整操作见 [RELEASING.md](RELEASING.md)：从最新 `master`
-创建 `release/vX.Y.Z`，仅更新 `package.json` 与 `bun.lock`，等待 CI 通过后合入。无关 PR 可以继续保持打开。
+正式发布必须先通过 Release Please 自动维护的发版 PR。完整操作见 [RELEASING.md](RELEASING.md)：
+普通改动通过 PR 合入 `master` 后，检查机器人建议的版本、Changelog 和 CI，准备发布时再合并。
+无关 PR 可以继续保持打开。
 
 [Release workflow](https://github.com/cixiangtao/codex-usage/actions/workflows/release.yml) 会在版本文件进入
 `master` 时运行门禁，并且只有能反查到上述已合并 Release PR 时才继续：
 
-1. 校验合并 PR、发布分支、受限文件差异、目标版本和现有 tag 状态。
+1. 校验自动发版 PR、发布分支、受限文件差异、目标版本和现有 tag 状态。
 2. 执行 TypeScript 类型检查与 Swift 测试。
 3. 使用 PR 中已经批准的版本构建 `.app`。
 4. 进行 ad-hoc 签名，生成并校验 `CodexUsage-vX.Y.Z.dmg`、自动更新用 ZIP 和 `SHA256SUMS.txt`。
