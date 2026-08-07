@@ -107,16 +107,21 @@ VERSION=1.2.3 BUILD_NUMBER=456 bun run package:app
 
 ## GitHub Actions 发布
 
-正式发布由 [Release workflow](https://github.com/cixiangtao/codex-usage/actions/workflows/release.yml) 执行。在 GitHub 的 **Actions → Release → Run workflow** 中填写不带 `v` 的版本号和发布说明。工作流会：
+正式发布必须先通过专用 Release PR。完整操作见 [RELEASING.md](RELEASING.md)：从最新 `master`
+创建 `release/vX.Y.Z`，仅更新 `package.json` 与 `bun.lock`，等待 CI 通过后合入。无关 PR 可以继续保持打开。
 
-1. 校验目标版本、现有 tag 和 GitHub Release 状态。
+[Release workflow](https://github.com/cixiangtao/codex-usage/actions/workflows/release.yml) 会在版本文件进入
+`master` 时运行门禁，并且只有能反查到上述已合并 Release PR 时才继续：
+
+1. 校验合并 PR、发布分支、受限文件差异、目标版本和现有 tag 状态。
 2. 执行 TypeScript 类型检查与 Swift 测试。
-3. 更新 `package.json` / `bun.lock`，使用目标版本构建 `.app`。
-4. 进行 ad-hoc 签名，生成 `CodexUsage-vX.Y.Z.dmg`、自动更新用 ZIP 和 `SHA256SUMS.txt`。
-5. 校验签名、DMG、ZIP、哈希和应用启动后，创建 release commit 与 `vX.Y.Z` tag。
-6. 创建 GitHub Release、上传资产，再从 Release 下载并复核公开产物。
+3. 使用 PR 中已经批准的版本构建 `.app`。
+4. 进行 ad-hoc 签名，生成并校验 `CodexUsage-vX.Y.Z.dmg`、自动更新用 ZIP 和 `SHA256SUMS.txt`。
+5. 在 Release PR 的合并提交上创建 `vX.Y.Z` tag。
+6. 在同一 Actions 链中创建 GitHub Release、上传并复核资产。
 
-工作流使用仓库自带的短期 `GITHUB_TOKEN`，不需要保存个人访问令牌。版本提交和 tag 会原子推送；如果推送成功但 Release 创建失败，可以用相同版本重新运行来补全 Release。
+工作流使用仓库自带的短期 `GITHUB_TOKEN`，不需要保存个人访问令牌。手工 tag、直接 push 和
+workflow dispatch 都不能发布版本；如果 tag 已创建但 Release 未完成，可以重新运行同一个工作流补全。
 
 本地仍可运行 `bun run package:app` 验证打包，但它不会创建提交、tag 或远端 Release。
 
