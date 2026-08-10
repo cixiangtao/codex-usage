@@ -1,5 +1,7 @@
 # Releasing CodexUsage
 
+English | [简体中文](RELEASING.zh-CN.md)
+
 GitHub Actions is the only formal publisher. Release Please automatically creates or updates the
 release pull request; maintainers do not bump versions, create tags, or package a release locally.
 
